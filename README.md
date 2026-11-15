@@ -1,5 +1,9 @@
 # Sungrow EMS for Home Assistant
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Maximo101/sungrow_ems/main/custom_components/sungrow_ems/brand/logo.png" alt="Sungrow EMS Logo" width="200">
+</p>
+
 [![GitHub release (pre-release)](https://img.shields.io/github/v/release/Maximo101/sungrow_ems?include_prereleases&label=pre-release)](https://github.com/Maximo101/sungrow_ems/releases)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
@@ -13,9 +17,9 @@ It replaces a stack of template sensors, utility meters and Riemann integrals wi
 
 ## Scope of this release
 
-| | v0.1.4 (this release) | v0.2.0 (planned) |
+| | v0.1.4 (this release) | |
 |---|---|---|
-| **Phase** | 1: Read-only telemetry | 2: Write control |
+| **Phase** | 1: Read-only telemetry |
 | **Platforms** | `sensor`, `binary_sensor` | adds `select`, `number`, `switch`, services |
 | **Writes to hardware** | **None.** Polls only. | Via the iHomeManager, read-back verified |
 | **Control** | — | EMS mode, forced charge/discharge + power setpoint, export / active-power limits, AC22 EV charger mode, VPP heartbeat keep-alive |
@@ -73,12 +77,17 @@ The iHomeManager is optional. Without it you still get every inverter sensor, bu
 
 ## Installation
 
-### HACS (custom repository)
+### Marketplace on Home Assistant (formerly HACS - custom repository)
 
-1. In HACS, open the menu (⋮) → **Custom repositories**.
-2. Add `https://github.com/Maximo101/sungrow_ems` with category **Integration**.
+You can add a custom respository.
+1. In Settings go to 'Marketplace', open the menu (⋮) → **Custom repositories**.
+2. Add from Link `https://github.com/Maximo101/sungrow_ems` with category **Integration**.
 3. Find **Sungrow EMS** in HACS and download it. Pre-releases are listed when you enable **Show beta versions** on the integration's page in HACS.
 4. Restart Home Assistant.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Maximo101/sungrow_ems/main/custom_components/sungrow_ems/brand/marketplace.png" alt="Home Assistant">
+</p>
 
 ### Manual
 
@@ -101,6 +110,10 @@ The iHomeManager is optional. Without it you still get every inverter sensor, bu
 | iHomeManager unit ID | 247 | Fixed by the iHM protocol; leave as is |
 
 The integration reads the inverter serial number during setup and uses it as the entry's unique ID, so the same inverter can't be added twice. Hosts and ports can be changed later with **Reconfigure**.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Maximo101/sungrow_ems/main/custom_components/sungrow_ems/brand/ha1.png" alt="Sungrow EMS">
+</p>
 
 ### Options
 
@@ -160,12 +173,6 @@ Because the iHM only accepts one connection per port, two pollers on the same po
 - **iHM 8049 / 8050** (charger enable / grid draw) read "Disable" in every charger mode tested; their meaning on current firmware is still unclear.
 - The iHM export-limit registers (8028 / 8031) are a separate Modbus limitation layer and don't reflect the export limit set in the iSolarCloud app.
 
-## Roadmap
-
-- **v0.2.0 (Phase 2, write control):** `select` (EMS mode, charge/discharge command, AC22 charger mode), `number` (battery power target, export and active-power limit ratios), `switch` (feed-in and active-power limitation), a VPP heartbeat keep-alive, and services such as `sungrow_ems.force_charge`. All writes go through the same locked Modbus client as the reads and are verified by read-back.
-- Auto-detection of three-phase models.
-- Per-pack battery BMS data.
-
 ## Troubleshooting
 
 - **Cannot connect during setup:** check the IP and port, make sure Modbus TCP is enabled on the WiNet-S, and that nothing else holds the iHM port you chose.
@@ -184,7 +191,7 @@ When opening an issue, please include your inverter model, iHM firmware (shown o
 
 ## Credits
 
-Sungrow EMS started life as a fork of **[sungrow-solarcloud-haos-integration](https://github.com/Cyber40014/sungrow-solarcloud-haos-integration)** by **[@Cyber40014](https://github.com/Cyber40014)**, by way of the **furmek** fork. Huge thanks for the original integration: its entity keys (`mb_*`, `ihm_*`) and register selection are the foundation this project was built on, and they are kept so the two can be compared one-to-one. Since then the code has been rewritten as a local-only Modbus integration, with the cloud API removed and the coordinators, Modbus hub, register map and derived sensors redone from scratch.
+Sungrow EMS started life as a fork of **[sungrow-solarcloud-haos-integration](https://github.com/Cyber40014/sungrow-solarcloud-haos-integration)** by **[@Cyber40014](https://github.com/Cyber40014)**. Huge thanks for the original integration: its entity keys (`mb_*`, `ihm_*`) and register selection are the foundation this project was built on. Since then the code has been rewritten as a local-only Modbus integration, with the cloud API removed and the coordinators, Modbus hub, register map and derived sensors redone from scratch.
 
 Also thanks to:
 
@@ -194,4 +201,4 @@ Also thanks to:
 
 ## Disclaimer
 
-This is an independent community project. It is **not affiliated with, endorsed by or supported by Sungrow**. "Sungrow", "iSolarCloud", "iHomeManager" and "WiNet" are trademarks of their respective owners. Use at your own risk; from v0.2.0 the integration will write to your inverter and gateway, and incorrect settings can affect your system and warranty.
+This is an independent community project. It is **not affiliated with, endorsed by or supported by Sungrow**. "Sungrow", "iSolarCloud", "iHomeManager" and "WiNet" are trademarks of their respective owners.
