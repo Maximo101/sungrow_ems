@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Home Assistant config and secrets (never commit)
+secrets.yaml
+.env
+*.db
+*.db-shm
+*.db-wal
+.storage/
+configuration.yaml
+automations.yaml
+home-assistant.log*
+
+# Vendor protocol PDFs (keep out of the repo)
+*.pdf
