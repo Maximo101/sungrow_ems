@@ -8,8 +8,12 @@ Behaviour:
     a connection error or two consecutive timeouts, never per poll. pymodbus's
     own auto-reconnect is disabled so a background reconnect can never take a
     second TCP slot on the iHM (one connection per port).
+  * Read-only by design: the only function codes this hub can send are FC03
+    (read holding registers) and FC04 (read input registers). There is no
+    write path, and none will be added.
   * Every transaction runs under one ``asyncio.Lock``: exactly one request in
-    flight per socket, reads and writes alike.
+    flight per socket. The poll loop, a manual refresh and the config-flow
+    probe (which reuses the live socket) can all ask at the same time.
   * Optional pacing between requests (iHM: 1000 ms, measured from the end of
     the previous transaction). The first request after a connect is paced too.
   * Block reads follow ``registers.BLOCKS``. If the device answers a block with
@@ -22,22 +26,20 @@ Behaviour:
   * A read cycle aborts at the first block that is unreachable after retries,
     returning what it already has. It raises only when nothing was read.
 
-pymodbus compatibility: 3.8 and later. The unit-id keyword is detected
-(``device_id`` from 3.10, ``slave`` before), with a fallback if detection is
-wrong.
+Requires pymodbus 3.10 or later (``device_id`` keyword).
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 import contextlib
 from dataclasses import asdict, dataclass, field
-import inspect
 import logging
 import time
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Final
 
 import pymodbus
 from pymodbus.client import AsyncModbusTcpClient
@@ -52,8 +54,6 @@ from .registers import (
     contiguous_runs,
     decode_registers,
     decode_tables,
-    encode_block,
-    encode_value,
     to_wire,
 )
 
@@ -84,14 +84,13 @@ TRANSIENT_CODES: frozenset[int] = frozenset(
     }
 )
 
-#: FC16 payload limit from the Modbus spec.
-MAX_WRITE_WORDS = 123
-
-_FUNCTION_READ = {
-    Table.INPUT: "read_input_registers",
-    Table.HOLDING: "read_holding_registers",
-}
-_UNIT_KWARGS = ("device_id", "slave", "unit")
+#: The only pymodbus calls this hub can make. Both are reads.
+_FUNCTION_READ: Final[Mapping[Table, str]] = MappingProxyType(
+    {
+        Table.INPUT: "read_input_registers",
+        Table.HOLDING: "read_holding_registers",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,14 +123,6 @@ class SungrowExceptionResponse(SungrowModbusError):
         self.code = code
         code_text = "unknown" if code is None else f"0x{code:02X}"
         super().__init__(f"{function} @ {address} rejected with exception {code_text}")
-
-
-class SungrowWriteError(SungrowModbusError):
-    """A write was refused or could not be encoded."""
-
-
-class SungrowWriteVerifyError(SungrowWriteError):
-    """Read-back after a write did not match what was written."""
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +167,6 @@ class HubStats:
     read_cycles: int = 0
     read_cycles_failed: int = 0
     read_cycles_partial: int = 0
-    writes: int = 0
-    write_failures: int = 0
     last_error: str | None = None
     last_success: float | None = None  # wall clock (time.time())
     last_cycle_duration: float | None = None
@@ -187,29 +176,6 @@ class HubStats:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _filter_kwargs(func: Any, wanted: dict[str, Any]) -> dict[str, Any]:
-    """Keep only keyword arguments that ``func`` accepts."""
-    try:
-        params = inspect.signature(func).parameters
-    except (TypeError, ValueError):
-        return wanted
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return wanted
-    return {k: v for k, v in wanted.items() if k in params}
-
-
-def _detect_unit_kwarg(client: AsyncModbusTcpClient) -> str:
-    """Return the unit-id keyword this pymodbus version uses."""
-    try:
-        params = inspect.signature(client.read_holding_registers).parameters
-    except (TypeError, ValueError):
-        return "device_id"
-    for name in _UNIT_KWARGS:
-        if name in params:
-            return name
-    return "device_id"
 
 
 def split_span(block: Block, start: int, count: int) -> list[tuple[int, int]]:
@@ -278,7 +244,6 @@ class SungrowModbusHub:
 
         self._lock = asyncio.Lock()
         self._client: AsyncModbusTcpClient | None = None
-        self._unit_kwarg: str | None = None
         self._closed = False
 
         self._last_io_end = 0.0
@@ -419,107 +384,6 @@ class SungrowModbusHub:
             result.merge(decode_registers(regs, words))
         return result
 
-    # -- writes ------------------------------------------------------------
-
-    async def async_write_words(
-        self,
-        address: int,
-        words: Sequence[int],
-        *,
-        device_id: int | None = None,
-        use_fc16: bool | None = None,
-    ) -> None:
-        """Write raw words at a documented holding address.
-
-        FC06 for a single word unless ``use_fc16`` is set; FC16 otherwise.
-        Writes are retried on timeouts and dropped sockets, which is safe for
-        Sungrow set-point registers because they are idempotent.
-        """
-        payload = [int(w) & 0xFFFF for w in words]
-        if not 1 <= len(payload) <= MAX_WRITE_WORDS:
-            raise SungrowWriteError(f"write length must be 1..{MAX_WRITE_WORDS}")
-        fc16 = (len(payload) > 1) if use_fc16 is None else bool(use_fc16)
-        if not fc16 and len(payload) != 1:
-            raise SungrowWriteError("FC06 writes exactly one register")
-        unit = self._device_id if device_id is None else int(device_id)
-
-        self.stats.writes += 1
-        try:
-            if fc16:
-                await self._transact_retry(
-                    "write_registers", address, device_id=unit, values=payload
-                )
-            else:
-                await self._transact_retry(
-                    "write_register", address, device_id=unit, value=payload[0]
-                )
-        except SungrowExceptionResponse as err:
-            self.stats.write_failures += 1
-            raise SungrowWriteError(
-                f"{self._name}: write to {address} refused: {err}"
-            ) from err
-        except SungrowModbusError:
-            self.stats.write_failures += 1
-            raise
-        _LOGGER.debug(
-            "%s: wrote %s to %d via %s",
-            self._name,
-            [f"0x{w:04X}" for w in payload],
-            address,
-            "FC16" if fc16 else "FC06",
-        )
-
-    async def async_write_register(
-        self,
-        register: Register,
-        value: float | int,
-        *,
-        device_id: int | None = None,
-        verify: bool = False,
-        use_fc16: bool | None = None,
-    ) -> list[int]:
-        """Encode and write one writable holding register. Returns the raw words.
-
-        32-bit registers always use FC16 (both words in one transaction).
-        With ``verify`` the register is read back and compared.
-        """
-        if register.table is not Table.HOLDING or not register.writable:
-            raise SungrowWriteError(
-                f"{register.key} is not a writable holding register"
-            )
-        try:
-            words = encode_value(register, value)
-        except (TypeError, ValueError) as err:
-            raise SungrowWriteError(str(err)) from err
-        fc16 = True if len(words) > 1 else use_fc16
-        await self.async_write_words(
-            register.address, words, device_id=device_id, use_fc16=fc16
-        )
-        if verify:
-            await self._verify(register.address, words, device_id)
-        return words
-
-    async def async_write_registers(
-        self,
-        items: Sequence[tuple[Register, float | int]],
-        *,
-        device_id: int | None = None,
-        verify: bool = False,
-    ) -> list[int]:
-        """Write several contiguous holding registers in one FC16 transaction.
-
-        Example (iHM spec, section 4): EMS mode 8024, command 8025 and power
-        8026-8027 in one request so the iHM never sees a half-applied command.
-        """
-        try:
-            start, words = encode_block(items)
-        except (TypeError, ValueError) as err:
-            raise SungrowWriteError(str(err)) from err
-        await self.async_write_words(start, words, device_id=device_id, use_fc16=True)
-        if verify:
-            await self._verify(start, words, device_id)
-        return words
-
     # -- diagnostics -------------------------------------------------------
 
     def diagnostics(self) -> dict[str, Any]:
@@ -532,7 +396,6 @@ class SungrowModbusHub:
             "device_id": self._device_id,
             "connected": self.connected,
             "pymodbus_version": getattr(pymodbus, "__version__", "unknown"),
-            "unit_kwarg": self._unit_kwarg,
             "timeout": self._timeout,
             "retries": self._retries,
             "min_request_interval": self._min_interval,
@@ -658,9 +521,7 @@ class SungrowModbusHub:
     async def _read_span(
         self, table: Table, start: int, count: int, unit: int
     ) -> list[int]:
-        response = await self._transact_retry(
-            _FUNCTION_READ[table], start, device_id=unit, count=count
-        )
+        response = await self._transact_retry(table, start, count, unit)
         registers = list(getattr(response, "registers", None) or [])
         if len(registers) < count:
             raise SungrowProtocolError(
@@ -668,36 +529,24 @@ class SungrowModbusHub:
             )
         return registers[:count]
 
-    async def _verify(
-        self, address: int, words: Sequence[int], device_id: int | None
-    ) -> None:
-        unit = self._device_id if device_id is None else int(device_id)
-        readback = await self._read_span(Table.HOLDING, address, len(words), unit)
-        if list(readback) != list(words):
-            raise SungrowWriteVerifyError(
-                f"{self._name}: wrote {list(words)} to {address}, read back {readback}"
-            )
-
     # -- internals: transactions -------------------------------------------
 
     async def _transact_retry(
-        self, function: str, address: int, *, device_id: int, **kwargs: Any
+        self, table: Table, address: int, count: int, unit: int
     ) -> Any:
-        """Run one transaction with retries. ``address`` is documented (1-based)."""
+        """Run one read with retries. ``address`` is documented (1-based)."""
         last: SungrowModbusError | None = None
         for attempt in range(self._retries + 1):
             try:
-                return await self._transact(
-                    function, address, device_id=device_id, **kwargs
-                )
+                return await self._transact(table, address, count, unit)
             except SungrowExceptionResponse as err:
                 if err.code not in TRANSIENT_CODES:
                     raise
                 last = err
             except SungrowConnectionError as err:
                 last = err
-                if self._closed:
-                    raise
+            if self._closed:
+                break
             if attempt < self._retries:
                 await asyncio.sleep(0.25 * (attempt + 1))
 
@@ -709,10 +558,13 @@ class SungrowModbusHub:
             raise SungrowConnectionError(str(last)) from last
         raise last
 
-    async def _transact(
-        self, function: str, address: int, *, device_id: int, **kwargs: Any
-    ) -> Any:
-        """One request/response under the lock, with pacing and error mapping."""
+    async def _transact(self, table: Table, address: int, count: int, unit: int) -> Any:
+        """One read request/response under the lock, with pacing and error mapping.
+
+        ``_FUNCTION_READ`` is the only route to pymodbus, so nothing but
+        FC03/FC04 can leave this hub.
+        """
+        function = _FUNCTION_READ[table]
         wire = to_wire(address)
         async with self._lock:
             client = await self._ensure_connected()
@@ -721,8 +573,8 @@ class SungrowModbusHub:
             started = time.monotonic()
             try:
                 async with asyncio.timeout(self._timeout * 2 + 1):
-                    response = await self._invoke(
-                        client, function, wire, device_id, **kwargs
+                    response = await getattr(client, function)(
+                        wire, count=count, device_id=unit
                     )
             except TimeoutError as err:
                 # Our guard fired inside pymodbus: its state is unknown, start clean.
@@ -767,40 +619,6 @@ class SungrowModbusHub:
                 )
             return response
 
-    async def _invoke(
-        self,
-        client: AsyncModbusTcpClient,
-        function: str,
-        wire_address: int,
-        device_id: int,
-        **kwargs: Any,
-    ) -> Any:
-        """Call a pymodbus method with whichever unit-id keyword it accepts."""
-        method = getattr(client, function)
-        current = self._unit_kwarg or "device_id"
-        try:
-            return await method(wire_address, **kwargs, **{current: device_id})
-        except TypeError as err:
-            if "unexpected keyword" not in str(err):
-                raise
-            for alternative in _UNIT_KWARGS:
-                if alternative == current:
-                    continue
-                try:
-                    response = await method(
-                        wire_address, **kwargs, **{alternative: device_id}
-                    )
-                except TypeError as inner:
-                    if "unexpected keyword" in str(inner):
-                        continue
-                    raise
-                _LOGGER.debug(
-                    "%s: pymodbus unit keyword is %s", self._name, alternative
-                )
-                self._unit_kwarg = alternative
-                return response
-            raise
-
     async def _pace(self) -> None:
         if self._min_interval <= 0:
             return
@@ -831,18 +649,14 @@ class SungrowModbusHub:
             )
 
         self._drop_client()
-        kwargs = _filter_kwargs(
-            AsyncModbusTcpClient.__init__,
-            {
-                "host": self._host,
-                "port": self._port,
-                "timeout": self._timeout,
-                "retries": 0,  # retries are handled here, under the lock
-                "reconnect_delay": 0,  # no background reconnect (iHM: 1 socket per port)
-                "name": f"sungrow_ems:{self._name}",
-            },
+        client = AsyncModbusTcpClient(
+            self._host,
+            port=self._port,
+            timeout=self._timeout,
+            retries=0,  # retries are handled here, under the lock
+            reconnect_delay=0,  # no background reconnect (iHM: 1 socket per port)
+            name=f"sungrow_ems:{self._name}",
         )
-        client = AsyncModbusTcpClient(**kwargs)
         reason = "connect() returned False"
         connected = False
         try:
@@ -885,9 +699,7 @@ class SungrowModbusHub:
         self.stats.connects += 1
         # Treat the connect as I/O so the first request is paced as well.
         self._last_io_end = time.monotonic()
-        if self._unit_kwarg is None:
-            self._unit_kwarg = _detect_unit_kwarg(client)
-        _LOGGER.debug("%s: connected (unit keyword %s)", self._name, self._unit_kwarg)
+        _LOGGER.debug("%s: connected", self._name)
         return client
 
     def _drop_client(self) -> None:

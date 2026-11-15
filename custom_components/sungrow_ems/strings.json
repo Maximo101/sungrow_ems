@@ -17,7 +17,7 @@
           "inverter_host": "IP address or hostname of the inverter's WiNet-S / LAN Modbus TCP interface.",
           "inverter_port": "Modbus TCP port of the inverter. Default 502.",
           "inverter_device_id": "Modbus unit (slave) ID of the inverter. Default 1.",
-          "ihm_enabled": "Poll the iHomeManager for grid, load, battery totals and the EV charger. Control (Phase 2) also goes through the iHM.",
+          "ihm_enabled": "Poll the iHomeManager for grid, load, battery totals and the EV charger.",
           "ihm_host": "IP address or hostname of the iHomeManager. Required when the iHomeManager is enabled.",
           "ihm_port": "The iHM listens on 502, 503 and 504 and allows ONE connection per port. Default 503. Use 504 while another integration still holds 503.",
           "ihm_device_id": "Fixed at 247 by the iHM protocol. Only change this if Sungrow support tells you to."
@@ -39,7 +39,7 @@
           "inverter_host": "IP address or hostname of the inverter's WiNet-S / LAN Modbus TCP interface.",
           "inverter_port": "Modbus TCP port of the inverter. Default 502.",
           "inverter_device_id": "Modbus unit (slave) ID of the inverter. Default 1.",
-          "ihm_enabled": "Poll the iHomeManager for grid, load, battery totals and the EV charger. Control (Phase 2) also goes through the iHM.",
+          "ihm_enabled": "Poll the iHomeManager for grid, load, battery totals and the EV charger.",
           "ihm_host": "IP address or hostname of the iHomeManager. Required when the iHomeManager is enabled.",
           "ihm_port": "The iHM listens on 502, 503 and 504 and allows ONE connection per port. Default 503. Use 504 while another integration still holds 503.",
           "ihm_device_id": "Fixed at 247 by the iHM protocol. Only change this if Sungrow support tells you to."

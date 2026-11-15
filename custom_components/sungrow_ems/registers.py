@@ -1,4 +1,8 @@
-"""Sungrow EMS register map, block plan and codec.
+"""Sungrow EMS register map, block plan and decoder (read-only).
+
+This integration never writes to a device, so there is no encoder here and
+registers carry no write metadata. Holding registers are read (FC03) and shown
+as diagnostic sensors only.
 
 Pure Python. No Home Assistant imports, no I/O. Everything here can be unit
 tested offline.
@@ -53,7 +57,7 @@ class Table(StrEnum):
     """Modbus register table."""
 
     INPUT = "input"  # FC04, read-only
-    HOLDING = "holding"  # FC03 read, FC06/FC16 write
+    HOLDING = "holding"  # FC03, settings readback (never written)
 
 
 class DataType(StrEnum):
@@ -83,13 +87,6 @@ SENTINELS: Final[Mapping[DataType, int]] = MappingProxyType(
     }
 )
 
-_RAW_LIMITS: Final[dict[DataType, tuple[int, int]]] = {
-    DataType.U16: (0, 0xFFFF),
-    DataType.S16: (-0x8000, 0x7FFF),
-    DataType.U32: (0, 0xFFFFFFFF),
-    DataType.S32: (-0x80000000, 0x7FFFFFFF),
-}
-
 
 def to_wire(address: int) -> int:
     """Convert a documented (1-based) address to the 0-based wire address."""
@@ -118,7 +115,6 @@ class Register:
     valid_min: float | None = None  # scaled units; outside range -> invalid
     valid_max: float | None = None
     extra_invalid: frozenset[int] = frozenset()  # additional raw sentinels
-    writable: bool = False
     verified: bool = True  # False: not in [INV]/[IHM], or SH10RS behaviour unconfirmed
     note: str = ""
 
@@ -130,8 +126,6 @@ class Register:
             raise ValueError(f"{self.key}: length is only valid for UTF8")
         if self.scale <= 0:
             raise ValueError(f"{self.key}: scale must be positive")
-        if self.writable and self.table is not Table.HOLDING:
-            raise ValueError(f"{self.key}: only holding registers can be writable")
         object.__setattr__(self, "options", _freeze(self.options))
 
     @property
@@ -355,7 +349,7 @@ IHM_START_STOP: Final[Mapping[int, str]] = MappingProxyType(
 
 #: [IHM] V1.0.2 documents 1/0 for register 8028, but iHM firmware SV930.001.00.P014
 #: reports 0x55 (the 0xAA/0x55 convention used by the other iHM switches).
-#: Reads accept both. Phase 2 writes must use the encoding the device reports.
+#: Both encodings are decoded.
 IHM_ON_OFF: Final[Mapping[int, str]] = MappingProxyType(
     {1: "On", 0: "Off", 0xAA: "On", 0x55: "Off"}
 )
@@ -906,8 +900,7 @@ INVERTER_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
     _inv("mb_bms_alarm_2", 13078, U32),
 )
 
-# Inverter holding registers are read for diagnostics only. Control goes
-# through the iHM (system master), so none are writable here.
+# Holding registers (inverter and iHM) are read for diagnostics only.
 INVERTER_HOLDING_REGISTERS: Final[tuple[Register, ...]] = (
     _inv_hold("mb_ems_mode", 13050, U16, options=INVERTER_EMS_MODES),
     _inv_hold("mb_charge_discharge_command", 13051, U16, options=CHARGE_COMMANDS),
@@ -986,13 +979,12 @@ IHM_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
 )
 
 IHM_HOLDING_REGISTERS: Final[tuple[Register, ...]] = (
-    _ihm_hold("ihm_ems_mode", 8024, U16, options=IHM_EMS_MODES, writable=True),
+    _ihm_hold("ihm_ems_mode", 8024, U16, options=IHM_EMS_MODES),
     _ihm_hold(
         "ihm_charge_discharge_command",
         8025,
         U16,
         options=CHARGE_COMMANDS,
-        writable=True,
     ),
     _ihm_hold(
         "ihm_charge_discharge_power",
@@ -1000,18 +992,16 @@ IHM_HOLDING_REGISTERS: Final[tuple[Register, ...]] = (
         U32,
         scale=0.1,
         unit="kW",
-        writable=True,
         valid_min=0.0,
         note="Upper bound is dynamic: ihm_battery_power_limit (8149).",
     ),
-    _ihm_hold("ihm_feed_in_limitation", 8028, U16, options=IHM_ON_OFF, writable=True),
+    _ihm_hold("ihm_feed_in_limitation", 8028, U16, options=IHM_ON_OFF),
     _ihm_hold(
         "ihm_feed_in_limitation_ratio",
         8031,
         S16,
         scale=0.1,
         unit="%",
-        writable=True,
         **_PCT,
         note="S16 since V1.0.2 (was S32). Table 7 in the PDF still shows S32.",
     ),
@@ -1020,31 +1010,26 @@ IHM_HOLDING_REGISTERS: Final[tuple[Register, ...]] = (
         8033,
         U16,
         unit="s",
-        writable=True,
         valid_min=0.0,
         valid_max=1000.0,
     ),
-    _ihm_hold("ihm_start_stop", 8047, U16, options=IHM_START_STOP, writable=True),
-    _ihm_hold("ihm_charger_mode", 8048, U16, options=IHM_CHARGER_MODES, writable=True),
-    _ihm_hold("ihm_charger_enable", 8049, U16, options=ENABLE_AA_55, writable=True),
+    _ihm_hold("ihm_start_stop", 8047, U16, options=IHM_START_STOP),
+    _ihm_hold("ihm_charger_mode", 8048, U16, options=IHM_CHARGER_MODES),
+    _ihm_hold("ihm_charger_enable", 8049, U16, options=ENABLE_AA_55),
     _ihm_hold(
         "ihm_charger_grid_draw",
         8050,
         U16,
         options=ENABLE_AA_55,
-        writable=True,
         note="Only settable in Eco charging mode.",
     ),
-    _ihm_hold(
-        "ihm_active_power_limitation", 8051, U16, options=ENABLE_AA_55, writable=True
-    ),
+    _ihm_hold("ihm_active_power_limitation", 8051, U16, options=ENABLE_AA_55),
     _ihm_hold(
         "ihm_active_power_limit_ratio",
         8052,
         U16,
         scale=0.1,
         unit="%",
-        writable=True,
         **_PCT,
     ),
 )
@@ -1070,7 +1055,7 @@ REGISTERS_BY_KEY: Final[Mapping[str, Register]] = MappingProxyType(
 # gap-free runs and remembers that split.
 
 _STATIC = 3600  # identity / firmware: hourly
-_SLOW = 60  # inverter settings readback: once a minute
+_SLOW = 60  # settings readback (holding registers): once a minute
 
 _BLOCK_SPECS: Final[tuple[tuple[str, Device, Table, int, int, int | None], ...]] = (
     # Inverter, FC04
@@ -1092,8 +1077,9 @@ _BLOCK_SPECS: Final[tuple[tuple[str, Device, Table, int, int, int | None], ...]]
     ("ihm_software", _H, _IN, 8318, 8332, _STATIC),
     ("ihm_system", _H, _IN, 8145, 8179, None),
     ("ihm_meter_charger", _H, _IN, 8552, 8595, None),
-    # iHM, FC03 (control state readback)
-    ("ihm_control", _H, _HO, 8024, 8052, None),
+    # iHM, FC03 (settings readback). Slow: each iHM request costs >= 1 s of
+    # pacing and these values only change when someone changes a setting.
+    ("ihm_settings", _H, _HO, 8024, 8052, _SLOW),
 )
 
 
@@ -1253,12 +1239,6 @@ def combine_u32(low: int, high: int) -> int:
     return (low & 0xFFFF) | ((high & 0xFFFF) << 16)
 
 
-def split_u32(value: int) -> list[int]:
-    """Split an unsigned 32-bit value into [low, high] words."""
-    value &= 0xFFFFFFFF
-    return [value & 0xFFFF, (value >> 16) & 0xFFFF]
-
-
 def _to_signed(raw: int, bits: int) -> int:
     sign = 1 << (bits - 1)
     return raw - (1 << bits) if raw & sign else raw
@@ -1370,80 +1350,3 @@ def decode_tables(
     for block in blocks:
         result.merge(decode_block(block, words_by_table.get(block.table, {})))
     return result
-
-
-# ---------------------------------------------------------------------------
-# Encoding (writes)
-# ---------------------------------------------------------------------------
-
-
-def encode_value(reg: Register, value: float | int) -> list[int]:
-    """Encode an engineering value into raw words for a write.
-
-    Validates enum membership, the register's valid range and the data type
-    range, and refuses to write a sentinel. 32-bit values come back as
-    [low, high].
-    """
-    if reg.dtype is DataType.UTF8:
-        raise ValueError(f"{reg.key}: writing strings is not supported")
-    if isinstance(value, bool):
-        raise TypeError(f"{reg.key}: expected a number, got bool")
-    if not math.isfinite(float(value)):
-        raise ValueError(f"{reg.key}: value must be finite")
-
-    if reg.options is not None and (
-        float(value) != int(value) or int(value) not in reg.options
-    ):
-        allowed = ", ".join(f"0x{k:02X}={v}" for k, v in reg.options.items())
-        raise ValueError(f"{reg.key}: {value!r} is not one of {allowed}")
-
-    if reg.valid_min is not None and value < reg.valid_min:
-        raise ValueError(f"{reg.key}: {value} is below {reg.valid_min}")
-    if reg.valid_max is not None and value > reg.valid_max:
-        raise ValueError(f"{reg.key}: {value} is above {reg.valid_max}")
-
-    raw = round(float(value) / reg.scale)
-    lo, hi = _RAW_LIMITS[reg.dtype]
-    if not lo <= raw <= hi:
-        raise ValueError(f"{reg.key}: raw value {raw} outside {reg.dtype} range")
-
-    bits = 16 if reg.count == 1 else 32
-    unsigned = raw & ((1 << bits) - 1)
-    if is_sentinel(reg, unsigned):
-        raise ValueError(
-            f"{reg.key}: raw value 0x{unsigned:X} is the 'unavailable' sentinel"
-        )
-
-    return [unsigned] if bits == 16 else split_u32(unsigned)
-
-
-def encode_block(
-    registers: Sequence[tuple[Register, float | int]],
-) -> tuple[int, list[int]]:
-    """Encode several writable holding registers into one contiguous FC16 payload.
-
-    Registers must be contiguous with no gaps (for example iHM 8024, 8025,
-    8026-8027). Returns (documented_start_address, words).
-    """
-    if not registers:
-        raise ValueError("Nothing to encode")
-    ordered = sorted(registers, key=lambda item: item[0].address)
-    first = ordered[0][0]
-    words: list[int] = []
-    expected = first.address
-    for reg, value in ordered:
-        if not reg.writable:
-            raise ValueError(f"{reg.key} is not writable")
-        if reg.device is not first.device or reg.table is not Table.HOLDING:
-            raise ValueError(
-                "All registers must be holding registers on the same device"
-            )
-        if reg.address != expected:
-            raise ValueError(
-                f"Gap before {reg.key}: expected {expected}, got {reg.address}"
-            )
-        words.extend(encode_value(reg, value))
-        expected = reg.end + 1
-    if len(words) > 123:
-        raise ValueError("FC16 payload exceeds 123 registers")
-    return first.address, words

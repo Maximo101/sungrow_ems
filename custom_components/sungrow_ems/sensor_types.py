@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from enum import StrEnum
+from typing import Any, Final
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -118,129 +119,124 @@ def _power_flow_attrs(_value: Value, raw: int | None) -> dict[str, Any]:
     return {"raw_hex": f"0x{raw:04X}", **decode_bits(raw, POWER_FLOW_BITS)}
 
 
-def _preset(kind: str, reg: Register) -> dict[str, Any]:
+class Kind(StrEnum):
+    """What a register measures; selects its preset below."""
+
+    POWER_W = "power_w"
+    POWER_KW = "power_kw"
+    IHM_POWER = "ihm_power"  # kW on the wire -> native W
+    IHM_POWER_RATING = "ihm_power_rating"  # kW on the wire -> native W, shown as kW
+    REACTIVE = "reactive"
+    ENERGY = "energy"
+    ENERGY_STORAGE = "energy_storage"
+    VOLTAGE = "voltage"
+    CURRENT = "current"
+    TEMPERATURE = "temperature"
+    FREQUENCY = "frequency"
+    BATTERY = "battery"
+    PERCENT = "percent"
+    POWER_FACTOR = "power_factor"
+    DURATION = "duration"
+    COUNT = "count"
+    ENUM = "enum"
+    HEX = "hex"
+    VERSION = "version"
+    BITFIELD = "bitfield"
+    POWER_FLOW = "power_flow"
+    TEXT = "text"
+    PLAIN = "plain"
+
+
+_MEASUREMENT = SensorStateClass.MEASUREMENT
+
+
+def _numeric(
+    device_class: SensorDeviceClass | None,
+    unit: str | None,
+    *,
+    state_class: SensorStateClass | None = _MEASUREMENT,
+    precision: int | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Static preset. ``precision=None`` means "from the register's scale"."""
+    return {
+        "device_class": device_class,
+        "state_class": state_class,
+        "native_unit_of_measurement": unit,
+        "suggested_display_precision": precision,
+        **extra,
+    }
+
+
+#: Shared with derived.py so computed and raw sensors agree.
+POWER_W_PRESET: Final[dict[str, Any]] = _numeric(
+    SensorDeviceClass.POWER, UnitOfPower.WATT, precision=0
+)
+ENERGY_KWH_PRESET: Final[dict[str, Any]] = _numeric(
+    SensorDeviceClass.ENERGY,
+    UnitOfEnergy.KILO_WATT_HOUR,
+    state_class=SensorStateClass.TOTAL_INCREASING,
+)
+PERCENT_PRESET: Final[dict[str, Any]] = _numeric(None, PERCENTAGE)
+
+#: Presets that do not depend on the register.
+_STATIC_PRESETS: Final[dict[Kind, dict[str, Any]]] = {
+    Kind.POWER_W: POWER_W_PRESET,
+    Kind.POWER_KW: _numeric(SensorDeviceClass.POWER, UnitOfPower.KILO_WATT),
+    Kind.IHM_POWER: {**POWER_W_PRESET, "value_fn": _kw_to_w},
+    Kind.IHM_POWER_RATING: {
+        **POWER_W_PRESET,
+        "suggested_unit_of_measurement": UnitOfPower.KILO_WATT,
+        "suggested_display_precision": 1,
+        "value_fn": _kw_to_w,
+    },
+    Kind.REACTIVE: _numeric(
+        SensorDeviceClass.REACTIVE_POWER,
+        UnitOfReactivePower.VOLT_AMPERE_REACTIVE,
+        precision=0,
+    ),
+    Kind.ENERGY: ENERGY_KWH_PRESET,
+    Kind.ENERGY_STORAGE: _numeric(
+        SensorDeviceClass.ENERGY_STORAGE, UnitOfEnergy.KILO_WATT_HOUR
+    ),
+    Kind.VOLTAGE: _numeric(SensorDeviceClass.VOLTAGE, UnitOfElectricPotential.VOLT),
+    Kind.CURRENT: _numeric(SensorDeviceClass.CURRENT, UnitOfElectricCurrent.AMPERE),
+    Kind.TEMPERATURE: _numeric(
+        SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS
+    ),
+    Kind.FREQUENCY: _numeric(SensorDeviceClass.FREQUENCY, UnitOfFrequency.HERTZ),
+    Kind.BATTERY: _numeric(SensorDeviceClass.BATTERY, PERCENTAGE),
+    Kind.PERCENT: PERCENT_PRESET,
+    Kind.POWER_FACTOR: _numeric(SensorDeviceClass.POWER_FACTOR, None, precision=3),
+    Kind.DURATION: _numeric(
+        SensorDeviceClass.DURATION, UnitOfTime.SECONDS, state_class=None, precision=0
+    ),
+    Kind.COUNT: {"state_class": _MEASUREMENT, "suggested_display_precision": 0},
+    Kind.VERSION: {"value_fn": _version_fn},
+    Kind.POWER_FLOW: {"attrs_fn": _power_flow_attrs},
+    Kind.TEXT: {},
+    Kind.PLAIN: {},
+}
+
+#: Presets built from the register (labels, word width, bit names).
+_REGISTER_PRESETS: Final[dict[Kind, Callable[[Register], dict[str, Any]]]] = {
+    Kind.ENUM: lambda reg: {"value_fn": _label_fn(reg), "attrs_fn": _code_attrs},
+    Kind.HEX: lambda reg: {"value_fn": _hex_fn(reg)},
+    Kind.BITFIELD: lambda reg: {"attrs_fn": _bitfield_attrs(reg.key)},
+}
+
+
+def _preset(kind: Kind, reg: Register) -> dict[str, Any]:
     """Device class, state class, unit and converters for a kind of register."""
-    precision = reg.decimals
-    match kind:
-        case "power_w":
-            return {
-                "device_class": SensorDeviceClass.POWER,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfPower.WATT,
-                "suggested_display_precision": 0,
-            }
-        case "power_kw":
-            return {
-                "device_class": SensorDeviceClass.POWER,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfPower.KILO_WATT,
-                "suggested_display_precision": precision,
-            }
-        case "ihm_power":  # kW on the wire -> native W
-            return {
-                "device_class": SensorDeviceClass.POWER,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfPower.WATT,
-                "suggested_display_precision": 0,
-                "value_fn": _kw_to_w,
-            }
-        case "ihm_power_rating":  # kW on the wire -> native W, displayed as kW
-            return {
-                "device_class": SensorDeviceClass.POWER,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfPower.WATT,
-                "suggested_unit_of_measurement": UnitOfPower.KILO_WATT,
-                "suggested_display_precision": 1,
-                "value_fn": _kw_to_w,
-            }
-        case "reactive":
-            return {
-                "device_class": SensorDeviceClass.REACTIVE_POWER,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfReactivePower.VOLT_AMPERE_REACTIVE,
-                "suggested_display_precision": 0,
-            }
-        case "energy":
-            return {
-                "device_class": SensorDeviceClass.ENERGY,
-                "state_class": SensorStateClass.TOTAL_INCREASING,
-                "native_unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
-                "suggested_display_precision": precision,
-            }
-        case "energy_storage":
-            return {
-                "device_class": SensorDeviceClass.ENERGY_STORAGE,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
-                "suggested_display_precision": precision,
-            }
-        case "voltage":
-            return {
-                "device_class": SensorDeviceClass.VOLTAGE,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfElectricPotential.VOLT,
-                "suggested_display_precision": precision,
-            }
-        case "current":
-            return {
-                "device_class": SensorDeviceClass.CURRENT,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfElectricCurrent.AMPERE,
-                "suggested_display_precision": precision,
-            }
-        case "temperature":
-            return {
-                "device_class": SensorDeviceClass.TEMPERATURE,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfTemperature.CELSIUS,
-                "suggested_display_precision": precision,
-            }
-        case "frequency":
-            return {
-                "device_class": SensorDeviceClass.FREQUENCY,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": UnitOfFrequency.HERTZ,
-                "suggested_display_precision": precision,
-            }
-        case "battery":
-            return {
-                "device_class": SensorDeviceClass.BATTERY,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": PERCENTAGE,
-                "suggested_display_precision": precision,
-            }
-        case "percent":
-            return {
-                "state_class": SensorStateClass.MEASUREMENT,
-                "native_unit_of_measurement": PERCENTAGE,
-                "suggested_display_precision": precision,
-            }
-        case "power_factor":
-            return {
-                "device_class": SensorDeviceClass.POWER_FACTOR,
-                "state_class": SensorStateClass.MEASUREMENT,
-                "suggested_display_precision": 3,
-            }
-        case "duration":
-            return {
-                "device_class": SensorDeviceClass.DURATION,
-                "native_unit_of_measurement": UnitOfTime.SECONDS,
-            }
-        case "count":
-            return {"state_class": SensorStateClass.MEASUREMENT}
-        case "enum":
-            return {"value_fn": _label_fn(reg), "attrs_fn": _code_attrs}
-        case "hex":
-            return {"value_fn": _hex_fn(reg)}
-        case "version":
-            return {"value_fn": _version_fn}
-        case "bitfield":
-            return {"attrs_fn": _bitfield_attrs(reg.key)}
-        case "power_flow":
-            return {"attrs_fn": _power_flow_attrs}
-        case "text" | "plain":
-            return {}
-    raise ValueError(f"Unknown sensor kind {kind!r} for {reg.key}")
+    if (factory := _REGISTER_PRESETS.get(kind)) is not None:
+        return factory(reg)
+    preset = dict(_STATIC_PRESETS[kind])
+    if (
+        "suggested_display_precision" in preset
+        and preset["suggested_display_precision"] is None
+    ):
+        preset["suggested_display_precision"] = reg.decimals
+    return preset
 
 
 def _d(
@@ -260,7 +256,7 @@ def _d(
         entity_registry_enabled_default=enabled,
         entity_category=_DIAG if diagnostic else None,
         icon=icon,
-        **_preset(kind, reg),
+        **_preset(Kind(kind), reg),
     )
 
 
@@ -570,7 +566,7 @@ INVERTER_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# Inverter, holding registers FC03 (read-only readback; control is via iHM)
+# Inverter, holding registers FC03 (settings readback, diagnostic only)
 # ---------------------------------------------------------------------------
 
 INVERTER_SETTING_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
@@ -794,7 +790,7 @@ IHM_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# iHomeManager, holding registers FC03 (control state readback)
+# iHomeManager, holding registers FC03 (settings readback, diagnostic only)
 # ---------------------------------------------------------------------------
 
 IHM_SETTING_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (

@@ -1,4 +1,4 @@
-"""Constants for the Sungrow EMS integration."""
+"""Constants for the Sungrow EMS integration (read-only Modbus TCP telemetry)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from typing import Final
 from homeassistant.const import Platform
 
 DOMAIN: Final = "sungrow_ems"
-NAME: Final = "Sungrow EMS"
 MANUFACTURER: Final = "Sungrow"
 
 #: Appended to every entity unique_id so this integration can run beside the
@@ -19,7 +18,8 @@ UNIQUE_ID_SUFFIX: Final = "_ems"
 DEVICE_NAME_INVERTER: Final = "Sungrow EMS Inverter"
 DEVICE_NAME_IHM: Final = "Sungrow EMS iHomeManager"
 
-#: Platforms set up by __init__.py. Phase 2 adds select, number and switch.
+#: Platforms set up by __init__.py. Read-only by design: sensors only. Control
+#: platforms (select, number, switch) and services are permanently out of scope.
 PLATFORMS: Final[list[Platform]] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,6 @@ DEFAULT_INVERTER_DEVICE_ID: Final = 1
 #: iHM listens on 502, 503 and 504, one TCP connection per port ([IHM] 1.2).
 #: 503 by default; set 504 while another client still holds 503.
 DEFAULT_IHM_PORT: Final = 503
-IHM_PORTS: Final[tuple[int, ...]] = (502, 503, 504)
 #: [IHM] 1: "The iHM Communication Address is 247" (not changeable).
 DEFAULT_IHM_DEVICE_ID: Final = 247
 
@@ -128,10 +127,3 @@ UNSUPPORTED_RETRY_SECONDS: Final = 3600.0
 PLAN_RESET_SECONDS: Final = 6 * 3600.0
 #: Ceiling for the exponential reconnect backoff, seconds.
 RECONNECT_BACKOFF_MAX: Final = 60.0
-
-# ---------------------------------------------------------------------------
-# Coordinator data keys that are not registers
-# ---------------------------------------------------------------------------
-KEY_LAST_SUCCESS: Final = "last_success"
-KEY_DATA_AGE: Final = "data_age"
-KEY_CONSECUTIVE_FAILURES: Final = "consecutive_failures"

@@ -1,4 +1,4 @@
-"""Config flow for Sungrow EMS (local Modbus TCP only)."""
+"""Config flow for Sungrow EMS (local Modbus TCP, read-only)."""
 
 from __future__ import annotations
 
@@ -7,14 +7,12 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-import voluptuous as vol
-
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlow,
+    OptionsFlowWithReload,
 )
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
@@ -24,6 +22,7 @@ from homeassistant.helpers.selector import (
     NumberSelectorMode,
     TextSelector,
 )
+import voluptuous as vol
 
 from .const import (
     CONF_BATTERY_CAPACITY,
@@ -328,8 +327,11 @@ class SungrowEmsConfigFlow(ConfigFlow, domain=DOMAIN):
         return SungrowEmsOptionsFlow()
 
 
-class SungrowEmsOptionsFlow(OptionsFlow):
-    """Polling intervals, failure threshold, battery capacity, efficiency, spike filter."""
+class SungrowEmsOptionsFlow(OptionsFlowWithReload):
+    """Polling intervals, failure threshold, battery capacity, efficiency, spike filter.
+
+    The entry reloads automatically when the options actually change.
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

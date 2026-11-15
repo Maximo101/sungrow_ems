@@ -1,4 +1,9 @@
-"""Sungrow EMS: local Modbus TCP integration for Sungrow hybrid inverters and the iHomeManager."""
+"""Sungrow EMS: local Modbus TCP telemetry for Sungrow hybrid inverters and the iHomeManager.
+
+Read-only by design. The integration polls input and holding registers
+(FC04/FC03) and never writes to the inverter, battery, iHomeManager or EV
+charger. Control entities and services are permanently out of scope.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,6 @@ import logging
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
@@ -24,8 +28,6 @@ from .const import (
     CONF_RETRIES,
     CONF_TIMEOUT,
     DEFAULT_FAILURE_THRESHOLD,
-    DOMAIN,
-    UNIQUE_ID_SUFFIX,
     DEFAULT_IHM_DEVICE_ID,
     DEFAULT_IHM_PORT,
     DEFAULT_IHM_REQUEST_INTERVAL,
@@ -35,22 +37,24 @@ from .const import (
     DEFAULT_INVERTER_SCAN_INTERVAL,
     DEFAULT_RETRIES,
     DEFAULT_TIMEOUT,
+    DOMAIN,
     INVERTER_REQUEST_INTERVAL,
     MIN_IHM_REQUEST_INTERVAL,
     PLAN_RESET_SECONDS,
     PLATFORMS,
     RECONNECT_BACKOFF_MAX,
+    UNIQUE_ID_SUFFIX,
     UNSUPPORTED_RETRY_SECONDS,
 )
 from .coordinator import (
     SungrowEmsConfigEntry,
+    SungrowEmsCoordinator,
     SungrowEmsRuntimeData,
-    SungrowIhmCoordinator,
-    SungrowInverterCoordinator,
     get_option,
 )
 from .derived import DerivedEngine
 from .modbus import SungrowModbusHub
+from .registers import Device
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,7 +98,7 @@ async def _async_close_hubs(hubs: list[SungrowModbusHub]) -> None:
     for hub in hubs:
         try:
             await hub.async_close()
-        except Exception:  # noqa: BLE001 - closing must never block unload
+        except Exception:
             _LOGGER.debug("Error closing %s", hub.name, exc_info=True)
 
 
@@ -114,10 +118,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: SungrowEmsConfigEntry) -
         min_request_interval=INVERTER_REQUEST_INTERVAL,
     )
     hubs: list[SungrowModbusHub] = [inverter_hub]
-    inverter = SungrowInverterCoordinator(
+
+    async def _async_close() -> None:
+        await _async_close_hubs(hubs)
+
+    # Runs on unload AND when setup fails at any later step, so the sockets
+    # (the iHM allows one TCP connection per port) are always released.
+    entry.async_on_unload(_async_close)
+
+    inverter = SungrowEmsCoordinator(
         hass,
         entry,
         inverter_hub,
+        device=Device.INVERTER,
         scan_interval=float(
             get_option(
                 entry, CONF_INVERTER_SCAN_INTERVAL, DEFAULT_INVERTER_SCAN_INTERVAL
@@ -126,7 +139,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SungrowEmsConfigEntry) -
         failure_threshold=failure_threshold,
     )
 
-    ihm: SungrowIhmCoordinator | None = None
+    ihm: SungrowEmsCoordinator | None = None
     if data.get(CONF_IHM_ENABLED) and data.get(CONF_IHM_HOST):
         ihm_hub = _build_hub(
             entry,
@@ -144,22 +157,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: SungrowEmsConfigEntry) -
             ),
         )
         hubs.append(ihm_hub)
-        ihm = SungrowIhmCoordinator(
+        ihm = SungrowEmsCoordinator(
             hass,
             entry,
             ihm_hub,
+            device=Device.IHM,
             scan_interval=float(
                 get_option(entry, CONF_IHM_SCAN_INTERVAL, DEFAULT_IHM_SCAN_INTERVAL)
             ),
             failure_threshold=failure_threshold,
         )
 
-    try:
-        # The inverter is required: without it nothing useful can be shown.
-        await inverter.async_config_entry_first_refresh()
-    except ConfigEntryNotReady:
-        await _async_close_hubs(hubs)
-        raise
+    # The inverter is required: without it nothing useful can be shown.
+    # Raises ConfigEntryNotReady (Home Assistant retries with backoff).
+    await inverter.async_config_entry_first_refresh()
 
     if ihm is not None:
         # The iHM is optional at startup: its entities start unavailable and
@@ -180,13 +191,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SungrowEmsConfigEntry) -
     entry.async_on_unload(runtime.derived.async_start())
 
     async def _async_on_stop(_event: Event) -> None:
-        # Free the iHM's single TCP slot promptly on restart.
+        # Entries are not unloaded on shutdown: free the iHM's TCP slot now.
         await _async_close_hubs(hubs)
 
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_on_stop)
     )
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -221,15 +231,5 @@ async def async_migrate_entry(
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SungrowEmsConfigEntry) -> bool:
-    """Unload a config entry and close both sockets."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        await _async_close_hubs(entry.runtime_data.hubs)
-    return unload_ok
-
-
-async def _async_update_listener(
-    hass: HomeAssistant, entry: SungrowEmsConfigEntry
-) -> None:
-    """Reload when options change (intervals, thresholds, energy model)."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Unload a config entry. The sockets are closed by the on-unload callback."""
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

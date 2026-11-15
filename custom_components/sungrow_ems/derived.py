@@ -65,7 +65,7 @@ from homeassistant.components.sensor import (
     SensorExtraStoredData,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
@@ -89,12 +89,11 @@ from .const import (
 from .coordinator import (
     SungrowEmsConfigEntry,
     SungrowEmsCoordinator,
-    SungrowIhmCoordinator,
-    SungrowInverterCoordinator,
     get_option,
 )
 from .entity import make_unique_id
 from .registers import POWER_FLOW_BITS, Device, decode_bits
+from .sensor_types import ENERGY_KWH_PRESET, PERCENT_PRESET, POWER_W_PRESET
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -483,8 +482,8 @@ class DerivedEngine:
         self,
         hass: HomeAssistant,
         entry: SungrowEmsConfigEntry,
-        inverter: SungrowInverterCoordinator,
-        ihm: SungrowIhmCoordinator | None,
+        inverter: SungrowEmsCoordinator,
+        ihm: SungrowEmsCoordinator | None,
     ) -> None:
         self.hass = hass
         self.entry = entry
@@ -693,20 +692,16 @@ class SungrowDerivedSensorEntityDescription(SensorEntityDescription):
     daily_total: bool = False  # state_class TOTAL with last_reset at local midnight
 
 
+#: Energy without a state class: each description sets its own (TOTAL for
+#: daily values that can fall during the day, TOTAL_INCREASING for meters).
 _ENERGY: dict[str, Any] = {
-    "device_class": SensorDeviceClass.ENERGY,
-    "native_unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
+    **{k: v for k, v in ENERGY_KWH_PRESET.items() if k != "state_class"},
     "suggested_display_precision": 2,
 }
-_POWER: dict[str, Any] = {
-    "device_class": SensorDeviceClass.POWER,
-    "state_class": SensorStateClass.MEASUREMENT,
-    "native_unit_of_measurement": UnitOfPower.WATT,
-    "suggested_display_precision": 0,
-}
+_POWER: dict[str, Any] = POWER_W_PRESET
 _PERCENT: dict[str, Any] = {
-    "state_class": SensorStateClass.MEASUREMENT,
-    "native_unit_of_measurement": PERCENTAGE,
+    "state_class": PERCENT_PRESET["state_class"],
+    "native_unit_of_measurement": PERCENT_PRESET["native_unit_of_measurement"],
     "icon": "mdi:percent",
 }
 

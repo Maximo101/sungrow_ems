@@ -16,6 +16,8 @@ Reliability model:
     first refresh when there is nothing to fall back to.
   * Slow blocks (identity, firmware, settings readback) are read according to
     their ``refresh_interval`` instead of every poll.
+
+Read-only: coordinators only ever call ``hub.async_read_blocks``.
 """
 
 from __future__ import annotations
@@ -112,21 +114,19 @@ class SungrowEmsData:
     def age(self, key: str | None = None) -> float | None:
         """Seconds since this key (or the last successful poll) was refreshed."""
         stamp = self.updated.get(key) if key else self.last_success
-        if stamp is None:
-            return None
-        return (dt_util.utcnow() - stamp).total_seconds()
+        return None if stamp is None else self.age_of(stamp)
 
 
 class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
     """Polls one Sungrow device through its hub."""
 
     device: Device
-    config_entry: ConfigEntry
+    config_entry: SungrowEmsConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: SungrowEmsConfigEntry,
         hub: SungrowModbusHub,
         *,
         device: Device,
@@ -365,11 +365,7 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
             return
         self._identity_seen = current
         registry = dr.async_get(self.hass)
-        lookup = getattr(registry, "async_get_device_by_identifier", None)
-        if lookup is not None:
-            device = lookup(self.device_identifier, self.config_entry.entry_id)
-        else:  # Home Assistant releases before the per-entry lookup existed
-            device = registry.async_get_device(identifiers={self.device_identifier})
+        device = registry.async_get_device(identifiers={self.device_identifier})
         if device is None:
             return
         info = self.device_info
@@ -383,56 +379,12 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
         )
 
 
-class SungrowInverterCoordinator(SungrowEmsCoordinator):
-    """Coordinator for the SH-series hybrid inverter."""
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-        hub: SungrowModbusHub,
-        *,
-        scan_interval: float,
-        failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
-    ) -> None:
-        super().__init__(
-            hass,
-            entry,
-            hub,
-            device=Device.INVERTER,
-            scan_interval=scan_interval,
-            failure_threshold=failure_threshold,
-        )
-
-
-class SungrowIhmCoordinator(SungrowEmsCoordinator):
-    """Coordinator for the iHomeManager (system master, grid meter, EV charger)."""
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-        hub: SungrowModbusHub,
-        *,
-        scan_interval: float,
-        failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
-    ) -> None:
-        super().__init__(
-            hass,
-            entry,
-            hub,
-            device=Device.IHM,
-            scan_interval=scan_interval,
-            failure_threshold=failure_threshold,
-        )
-
-
 @dataclass(slots=True)
 class SungrowEmsRuntimeData:
     """Everything a config entry owns while loaded (``entry.runtime_data``)."""
 
-    inverter: SungrowInverterCoordinator
-    ihm: SungrowIhmCoordinator | None
+    inverter: SungrowEmsCoordinator
+    ihm: SungrowEmsCoordinator | None
     hubs: list[SungrowModbusHub] = field(default_factory=list)
     derived: DerivedEngine | None = None
 

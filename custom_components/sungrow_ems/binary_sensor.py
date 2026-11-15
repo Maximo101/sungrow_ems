@@ -4,8 +4,7 @@
   (The old ``& 4096`` test also matched standby, shutdown, fault and warn
   states 0x1200-0x1900, 0x5500, 0x9100.)
 * EV charger fault: iHM charger status 8552 outside the documented codes
-  1, 2, 3, 6. Your automation fires on 8, 9 and 10 ("Unknown (N)"); this
-  covers those and any other undocumented code.
+  1, 2, 3, 6 (seen in the field: 8, 9 and 10).
 * Inverter fault: any bit set in the inverter's fault registers (13052-13067,
   13072-13077). Alarm-only registers are reported as attributes.
 """
@@ -153,8 +152,7 @@ BINARY_SENSORS: tuple[SungrowBinarySensorEntityDescription, ...] = (
         keys=("ihm_charger_status",),
         is_on_fn=_charger_fault,
         attrs_fn=_charger_attrs,
-        icon_on="mdi:ev-station",
-        icon_off="mdi:ev-station",
+        icon="mdi:ev-station",
     ),
 )
 

@@ -7,46 +7,73 @@
 [![GitHub release (pre-release)](https://img.shields.io/github/v/release/Maximo101/sungrow_ems?include_prereleases&label=pre-release)](https://github.com/Maximo101/sungrow_ems/releases)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Read-only](https://img.shields.io/badge/Modbus-read--only-blue)
 
-A **100 % local** Home Assistant integration for Sungrow hybrid inverters and the Sungrow **iHomeManager** (iHM), over Modbus TCP. No iSolarCloud account, no cloud polling and no YAML: everything is configured from the UI and talks directly to the hardware on your LAN.
-
-It replaces a stack of template sensors, utility meters and Riemann integrals with native Python entities, so the energy figures you used to build by hand in `configuration.yaml` come straight from the integration.
+A **100 % local, read-only** Home Assistant integration for Sungrow hybrid inverters and the Sungrow **iHomeManager** (iHM), over Modbus TCP. It gives you fast telemetry and ready-made energy tracking with no iSolarCloud account, no cloud polling and no YAML.
 
 > [!WARNING]
-> **Beta / pre-release.** It has been tested on one system so far (see [Tested hardware](#tested-hardware)). Please report what works and what doesn't on yours.
+> **Beta / pre-release.** Tested on one system so far (see [Tested hardware](#tested-hardware)). Please report what works and what doesn't on yours.
 
-## Scope of this release
+## Read-only by design
 
-| | v0.1.4 (this release) | |
-|---|---|---|
-| **Phase** | 1: Read-only telemetry |
-| **Platforms** | `sensor`, `binary_sensor` | adds `select`, `number`, `switch`, services |
-| **Writes to hardware** | **None.** Polls only. | Via the iHomeManager, read-back verified |
-| **Control** | — | EMS mode, forced charge/discharge + power setpoint, export / active-power limits, AC22 EV charger mode, VPP heartbeat keep-alive |
+Sungrow EMS is strictly a **telemetry and energy-tracking** integration. It **never writes** to your inverter, battery, iHomeManager or EV charger, and write/control features **will not be added**.
 
-v0.1.4 never sends a write command (FC06/FC16) to either device. Holding registers such as EMS mode, SOC limits, export limit and EV charger mode are shown as **read-only sensors** only.
+- The only Modbus function codes it can send are **FC03** and **FC04** (read holding / input registers). There is no write code in the repository, and the test suite fails if any is introduced.
+- There are no `select`, `number`, `switch` or `button` entities and no services.
+- Settings such as EMS mode, SOC limits, export limit and EV charger mode are shown as **read-only diagnostic sensors**.
 
----
+Why: register writes behave differently across models and regional firmware, and a wrong write can affect an inverter, a battery or a charger. Keeping the integration read-only means it cannot change how your system operates. To control your system, use the iSolarCloud app or the installer tools.
+
+## Key metrics
+
+A selection of the 187 entities (some are disabled by default). Entity IDs assume the default device names.
+
+| Metric | Entity | Unit | Source |
+|---|---|---|---|
+| Solar production now | `sensor.sungrow_ems_inverter_pv_dc_power` | W | Inverter |
+| Solar production today / lifetime | `…inverter_daily_pv_generation`, `…inverter_total_pv_generation` | kWh | Inverter |
+| MPPT 1–4 voltage and current | `…inverter_mppt1_voltage`, `…inverter_mppt1_current`, … | V, A | Inverter |
+| House load now | `sensor.sungrow_ems_ihomemanager_load_power` | W | iHM |
+| Grid power now (+ import, − export) | `sensor.sungrow_ems_ihomemanager_grid_active_power` | W | iHM |
+| Grid import / export now (split) | `…ihomemanager_active_import_from_grid`, `…ihomemanager_active_export_to_grid` | W | Calculated |
+| Grid import / export lifetime (spike-filtered) | `…ihomemanager_grid_import_safe`, `…ihomemanager_grid_export_safe` | kWh | Calculated |
+| Grid import / export today | `…ihomemanager_daily_import`, `…ihomemanager_daily_export` | kWh | Calculated |
+| Battery state of charge | `sensor.sungrow_ems_inverter_battery_soc` | % | Inverter |
+| Battery stored energy | `sensor.sungrow_ems_inverter_battery_stored_energy` | kWh | Calculated |
+| Battery power (charging / discharging split) | `…inverter_battery_charging_power`, `…inverter_battery_discharging_power` | W | Calculated |
+| Battery charge / discharge today | `…inverter_daily_battery_charge`, `…inverter_daily_battery_discharge` | kWh | Inverter |
+| Battery health, temperature, voltage | `…inverter_battery_health`, `…inverter_battery_temperature`, `…inverter_battery_voltage` | %, °C, V | Inverter |
+| Consumption today | `sensor.sungrow_ems_inverter_daily_consumption` | kWh | Calculated |
+| Self-sufficiency today | `…inverter_self_sufficient`, `…inverter_self_sufficient_percentage` | kWh, % | Calculated |
+| Where today's PV went (battery / home / grid) | `…inverter_battery_charged_from_pv_percentage`, `…inverter_daily_consumption_from_pv_percentage`, `…inverter_daily_export_to_grid_percentage` | % | Calculated |
+| EV charger power and status | `…ihomemanager_ev_charger_power`, `…ihomemanager_ev_charger_status` | W, text | iHM |
+| System status (decoded power flow) | `sensor.sungrow_ems_inverter_system_status` | text | Calculated |
+| Inverter state and temperature | `…inverter_running_state`, `…inverter_temperature` | text, °C | Inverter |
+| Grid voltage and frequency | `…ihomemanager_grid_voltage_a`, `…ihomemanager_grid_frequency` | V, Hz | iHM |
+| Off-grid, inverter fault, EV charger fault | `binary_sensor.sungrow_ems_inverter_off_grid_backup_mode`, `…inverter_inverter_fault`, `…ihomemanager_ev_charger_fault` | on/off | Calculated |
+| Poll health | `…inverter_last_successful_poll`, `…ihomemanager_last_successful_poll` | timestamp | Diagnostic |
+
+### Energy dashboard
+
+| Energy dashboard slot | Entity |
+|---|---|
+| Grid consumption | `sensor.sungrow_ems_ihomemanager_grid_import_safe` |
+| Return to grid | `sensor.sungrow_ems_ihomemanager_grid_export_safe` |
+| Solar production | `sensor.sungrow_ems_inverter_total_pv_generation` |
+| Battery: energy going in | `sensor.sungrow_ems_inverter_total_battery_charge_cumulative` |
+| Battery: energy coming out | `sensor.sungrow_ems_inverter_total_battery_discharge` |
 
 ## Features
 
 - **Fully local Modbus TCP.** Reads the inverter (via WiNet-S / LAN) and the iHomeManager directly. Nothing leaves your network.
 - **Two independent coordinators**, one per device, so a slow or offline iHM never stalls inverter data (and vice versa).
-- **Fast polling.** 10 s default for both devices (5 s minimum on the inverter). The iHM's mandatory 1 s gap between requests is respected automatically.
-- **Efficient block reads.** 161 registers are fetched in 17 batched blocks. If a device rejects part of a block, the hub splits it, remembers the working split, and retries the full block later.
-- **Resilient by design.** Last-known-good values are kept through short dropouts. Entities only go unavailable after a configurable number of consecutive failed polls (default 6). Reconnects use exponential backoff.
-- **Sentinel filtering.** Sungrow's "not available" values (`0xFFFF`, `0x7FFF`, etc.) and out-of-range readings are dropped instead of showing up as spikes in your history.
-- **Native replacements for common YAML templates:**
-  - Spike-filtered **Grid Import Safe / Grid Export Safe** totals, with automatic re-baselining (fixes the classic "latched forever" template bug)
-  - **Daily import, export and battery charge** meters that reset at local midnight and survive restarts
-  - **Daily consumption**, **consumption from PV**, **self-sufficiency** (kWh and %) and **purchased %**
-  - **PV split**: battery-charged-from-PV %, consumption-from-PV % and export % (always sum to 100)
-  - **Battery stored energy** (capacity read from the hardware, or set manually)
-  - Split power sensors: **active import / export** and **battery charging / discharging** power
-  - **System Status** text sensor with a dynamic icon, decoded from the power-flow bitfield
-- **Binary sensors:** off-grid, inverter fault, EV charger fault.
-- **Diagnostics:** per-device poll status sensors showing last success, consecutive failures and how long the values have been unchanged.
-- **Runs beside other Sungrow integrations.** Unique IDs carry an `_ems` suffix and devices have their own names, so you can compare old and new side by side before switching over.
+- **Fast polling.** 10 s default for both devices (5 s minimum). The iHM's mandatory 1 s gap between requests is respected automatically.
+- **Efficient block reads.** 161 registers in 17 batched blocks. Live values are read every poll; settings are read once a minute and identity once an hour. If a device rejects part of a block, the hub splits it and remembers the working split.
+- **Resilient.** Last-known-good values are kept through short dropouts. Entities go unavailable only after a configurable number of failed polls (default 6). Reconnects use exponential backoff, and sockets are always released on unload, reload and failed setup.
+- **Sentinel filtering.** Sungrow's "not available" values (`0xFFFF`, `0x7FFF`, …) and out-of-range readings are dropped instead of appearing as spikes.
+- **Native replacements for common YAML templates:** spike-filtered grid totals, midnight-reset daily meters, daily consumption, self-sufficiency, PV split percentages (always sum to 100), battery stored energy, split import/export and charge/discharge power, and a decoded System Status sensor.
+- **Diagnostics.** Per-device poll status sensors, plus a redacted *Download diagnostics* report (hosts and serial number removed).
+- **Runs beside other Sungrow integrations.** Unique IDs carry an `_ems` suffix and devices have their own names.
 
 ## Tested hardware
 
@@ -57,7 +84,7 @@ v0.1.4 never sends a write command (FC06/FC16) to either device. Holding registe
 | Gateway | iHomeManager, firmware SV930.001.00.P014 | Modbus TCP 503, unit ID 247 |
 | EV charger | Sungrow AC22E-01 | via iHomeManager |
 
-Tested on Home Assistant 2026.10.4.
+Tested on Home Assistant 2026.10.4. The test suite (74 tests) runs against a simulated inverter and iHomeManager.
 
 Other SH-series hybrids that implement the *Communication Protocol of Residential Hybrid Inverter* (V1.1.x) should work, since the register map follows the protocol, but they haven't been tested. Three-phase (RT) models will show some phase B/C entities as unavailable for now. **Reports from other models are very welcome.**
 
@@ -73,7 +100,7 @@ The iHomeManager is optional. Without it you still get every inverter sensor, bu
 - **Inverter:** Modbus TCP must be enabled on the WiNet-S / WiNet-S2 (or LAN) interface.
 - **iHomeManager (optional):** Modbus TCP must be enabled on the iHM during local commissioning (by your installer or via local access). The iHM listens on ports **502, 503 and 504** and allows **only one TCP connection per port**. If another tool (SunGather, another integration) already holds 503, use 504.
 - A fixed IP (DHCP reservation) for both devices is strongly recommended.
-- Home Assistant **2026.9 or newer**.
+- Home Assistant **2026.10 or newer**.
 
 ## Installation
 
@@ -133,25 +160,11 @@ The integration reads the inverter serial number during setup and uses it as the
 | Spike filter: largest daily total | 200 kWh | Daily values above this are treated as corrupt |
 | Spike filter: readings to re-baseline | 3 | Consistent readings needed to accept a new baseline |
 
-Saving options reloads the integration.
+Saving changed options reloads the integration.
 
 ## Entities
 
-Two devices are created: **Sungrow EMS Inverter** and **Sungrow EMS iHomeManager**. Some rarely useful or unreliable sensors are disabled by default; enable them from the device page if you need them.
-
-### Energy dashboard
-
-Suggested sources:
-
-| Energy dashboard slot | Entity |
-|---|---|
-| Grid consumption | `sensor.sungrow_ems_ihomemanager_grid_import_safe` |
-| Return to grid | `sensor.sungrow_ems_ihomemanager_grid_export_safe` |
-| Solar production | `sensor.sungrow_ems_inverter_total_pv_generation` |
-| Battery: energy going in | `sensor.sungrow_ems_inverter_total_battery_charge_cumulative` |
-| Battery: energy coming out | `sensor.sungrow_ems_inverter_total_battery_discharge` |
-
-Entity IDs above assume the default device names.
+Two devices are created: **Sungrow EMS Inverter** and **Sungrow EMS iHomeManager**. Some rarely useful or unreliable sensors are disabled by default; enable them from the device page if you need them. Holding-register readbacks (settings) are diagnostic entities.
 
 ## Running beside the original integration
 
@@ -163,15 +176,16 @@ You can run Sungrow EMS next to the cloud/hybrid integration it grew out of whil
 
 Because the iHM only accepts one connection per port, two pollers on the same port will fight and both will see timeouts.
 
-## Known limitations (v0.1.x)
+## Known limitations
 
-- **Read-only.** No writes to either device until v0.2.0 (see [Scope of this release](#scope-of-this-release)).
 - **Inverter total battery charge (13041)** returns an invalid high word on the SH10RS and is rejected; use *Total battery charge cumulative* (integrated from battery power) instead.
 - **Inverter meter registers** (13029, 13036–13038, 13045–13047) read 0 when the iHM does the metering, so they're disabled by default. Use the iHM meter sensors.
+- **Settings sensors update once a minute** (EMS mode, EV charger mode, limits), not every poll.
 - **WiNet-S caching (suspected):** the inverter sometimes repeats identical values for about 2 minutes while polls still succeed. The poll status sensors expose `seconds_since_value_change` to help confirm this.
 - **EV charger power (iHM 8594)** isn't in the current iHM protocol document and is marked unverified.
 - **iHM 8049 / 8050** (charger enable / grid draw) read "Disable" in every charger mode tested; their meaning on current firmware is still unclear.
 - The iHM export-limit registers (8028 / 8031) are a separate Modbus limitation layer and don't reflect the export limit set in the iSolarCloud app.
+- Three-phase (RT) models are untested.
 
 ## Troubleshooting
 
@@ -187,7 +201,15 @@ Because the iHM only accepts one connection per port, two pollers on the same po
       pymodbus: info
   ```
 
-When opening an issue, please include your inverter model, iHM firmware (shown on the iHomeManager device page), Home Assistant version and a debug log.
+When opening an issue, please attach the diagnostics download (**Settings → Devices & services → Sungrow EMS → ⋮ → Download diagnostics**) and include your inverter model, iHM firmware and Home Assistant version.
+
+## Development
+
+```bash
+pip install -r requirements_test.txt
+pytest
+ruff check . && ruff format --check .
+```
 
 ## Credits
 
