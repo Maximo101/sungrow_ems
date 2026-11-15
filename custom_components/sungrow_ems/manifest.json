@@ -1,0 +1,20 @@
+{
+  "domain": "sungrow_ems",
+  "name": "Sungrow EMS",
+  "codeowners": [
+    "@Maximo101"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Maximo101/sungrow_ems",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Maximo101/sungrow_ems/issues",
+  "loggers": [
+    "pymodbus"
+  ],
+  "requirements": [
+    "pymodbus>=3.8.0"
+  ],
+  "version": "0.1.4"
+}

@@ -1,0 +1,98 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sungrow EMS",
+        "description": "Connect to your Sungrow hybrid inverter and, optionally, the iHomeManager over local Modbus TCP. No cloud account is used and everything stays on your local network.",
+        "data": {
+          "inverter_host": "Inverter host",
+          "inverter_port": "Inverter port",
+          "inverter_device_id": "Inverter unit ID",
+          "ihm_enabled": "Use iHomeManager",
+          "ihm_host": "iHomeManager host",
+          "ihm_port": "iHomeManager port",
+          "ihm_device_id": "iHomeManager unit ID"
+        },
+        "data_description": {
+          "inverter_host": "IP address or hostname of the inverter's WiNet-S / LAN Modbus TCP interface.",
+          "inverter_port": "Modbus TCP port of the inverter. Default 502.",
+          "inverter_device_id": "Modbus unit (slave) ID of the inverter. Default 1.",
+          "ihm_enabled": "Poll the iHomeManager for grid, load, battery totals and the EV charger. Control (Phase 2) also goes through the iHM.",
+          "ihm_host": "IP address or hostname of the iHomeManager. Required when the iHomeManager is enabled.",
+          "ihm_port": "The iHM listens on 502, 503 and 504 and allows ONE connection per port. Default 503. Use 504 while another integration still holds 503.",
+          "ihm_device_id": "Fixed at 247 by the iHM protocol. Only change this if Sungrow support tells you to."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Sungrow EMS",
+        "description": "Change hosts, ports or unit IDs. The inverter serial number must stay the same.",
+        "data": {
+          "inverter_host": "Inverter host",
+          "inverter_port": "Inverter port",
+          "inverter_device_id": "Inverter unit ID",
+          "ihm_enabled": "Use iHomeManager",
+          "ihm_host": "iHomeManager host",
+          "ihm_port": "iHomeManager port",
+          "ihm_device_id": "iHomeManager unit ID"
+        },
+        "data_description": {
+          "inverter_host": "IP address or hostname of the inverter's WiNet-S / LAN Modbus TCP interface.",
+          "inverter_port": "Modbus TCP port of the inverter. Default 502.",
+          "inverter_device_id": "Modbus unit (slave) ID of the inverter. Default 1.",
+          "ihm_enabled": "Poll the iHomeManager for grid, load, battery totals and the EV charger. Control (Phase 2) also goes through the iHM.",
+          "ihm_host": "IP address or hostname of the iHomeManager. Required when the iHomeManager is enabled.",
+          "ihm_port": "The iHM listens on 502, 503 and 504 and allows ONE connection per port. Default 503. Use 504 while another integration still holds 503.",
+          "ihm_device_id": "Fixed at 247 by the iHM protocol. Only change this if Sungrow support tells you to."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the inverter. Check the host, port and that nothing else holds the connection.",
+      "not_sungrow": "The device answered but rejected the Sungrow identity registers. Check the unit ID.",
+      "no_serial": "The inverter did not report a serial number (registers 4990-4999).",
+      "ihm_host_required": "Enter the iHomeManager host, or turn off \"Use iHomeManager\".",
+      "ihm_cannot_connect": "Could not connect to the iHomeManager. It allows one connection per port: try port 504 while another integration uses 503.",
+      "not_ihm": "The device on that port is not an iHomeManager (device type code is not 0x072A).",
+      "unknown": "Unexpected error. Check the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This inverter is already configured.",
+      "reconfigure_successful": "Sungrow EMS was reconfigured.",
+      "unique_id_mismatch": "That is a different inverter (serial number changed). Add it as a new entry instead."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Sungrow EMS options",
+        "description": "Polling, reliability and energy model settings. Saving reloads the integration.",
+        "data": {
+          "inverter_scan_interval": "Inverter poll interval",
+          "ihm_scan_interval": "iHomeManager poll interval",
+          "timeout": "Request timeout",
+          "retries": "Retries per request",
+          "ihm_request_interval": "Minimum gap between iHM requests",
+          "failure_threshold": "Failed polls before unavailable",
+          "battery_capacity": "Battery capacity override",
+          "discharge_efficiency": "Battery discharge efficiency (DC to AC)",
+          "spike_max_jump": "Spike filter: largest accepted jump",
+          "spike_max_daily": "Spike filter: largest plausible daily total",
+          "spike_rebaseline_count": "Spike filter: readings needed to accept a new baseline"
+        },
+        "data_description": {
+          "inverter_scan_interval": "Seconds between inverter polls. 10 s is the recommended default.",
+          "ihm_scan_interval": "Seconds between iHomeManager polls. Each poll makes about 3 requests spaced by the minimum gap, so keep this at 10 s or more.",
+          "timeout": "Seconds to wait for each Modbus response.",
+          "retries": "Extra attempts after a timeout, dropped connection or busy reply.",
+          "ihm_request_interval": "The iHM protocol requires at least 1.0 s between requests.",
+          "failure_threshold": "Consecutive failed polls (or invalid readings for one register) before entities show unavailable. Until then the last good value is kept.",
+          "battery_capacity": "Usable battery capacity in kWh. 0 = automatic: use the capacity the hardware reports (iHomeManager register 8147, then inverter registers 13039 and 5639). If none of them report it, Battery stored energy shows unavailable until you enter a value here.",
+          "discharge_efficiency": "Factor applied to DC battery discharge in Daily Consumption. Default 0.85.",
+          "spike_max_jump": "Grid Import/Export Safe ignore a single step larger than this (kWh). Default 50.",
+          "spike_max_daily": "Daily Consumption treats a daily import or export above this as corrupt and uses 0 instead. Default 200.",
+          "spike_rebaseline_count": "After this many consecutive, consistent out-of-range readings the Safe meters accept the new value instead of holding the old one forever. Default 3."
+        }
+      }
+    }
+  }
+}
