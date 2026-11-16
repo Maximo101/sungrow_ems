@@ -26,7 +26,7 @@ Why: register writes behave differently across models and regional firmware, and
 
 ## Key metrics
 
-A selection of the 187 entities (some are disabled by default). Entity IDs assume the default device names.
+A selection of the 187 entities (some are disabled by default). Entity IDs assume the default device names. iHomeManager entities are tagged "(iHM)" in their names; the tag is not part of the entity ID.
 
 | Metric | Entity | Unit | Source |
 |---|---|---|---|

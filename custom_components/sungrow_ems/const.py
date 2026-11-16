@@ -18,6 +18,11 @@ UNIQUE_ID_SUFFIX: Final = "_ems"
 DEVICE_NAME_INVERTER: Final = "Sungrow EMS Inverter"
 DEVICE_NAME_IHM: Final = "Sungrow EMS iHomeManager"
 
+#: Added to the name of every iHomeManager entity, so a value that both
+#: devices report (battery SoC, battery power, ...) can be told apart wherever
+#: only the entity name is shown. Entity IDs do not include it.
+IHM_NAME_SUFFIX: Final = " (iHM)"
+
 #: Platforms set up by __init__.py. Read-only: sensors only. There are no
 #: control platforms (select, number, switch) or services at this stage.
 PLATFORMS: Final[list[Platform]] = [Platform.BINARY_SENSOR, Platform.SENSOR]

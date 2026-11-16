@@ -107,7 +107,7 @@ from .coordinator import (
     SungrowEmsCoordinator,
     get_option,
 )
-from .entity import make_unique_id
+from .entity import SungrowNamedEntity, make_unique_id
 from .registers import POWER_FLOW_BITS, RUNNING_STATE_OFF_GRID, Device, decode_bits
 from .sensor_types import ENERGY_KWH_PRESET, PERCENT_PRESET, POWER_W_PRESET
 
@@ -503,7 +503,10 @@ def compute_derived(
     out["battery_discharging_power"] = (
         None if battery_w is None else max(battery_w, 0.0)
     )
-    out["battery_charging_power"] = None if battery_w is None else max(-battery_w, 0.0)
+    # Not max(-battery_w, 0.0): that returns -0.0 at rest, shown as "-0 W".
+    out["battery_charging_power"] = (
+        None if battery_w is None else (-battery_w if battery_w < 0 else 0.0)
+    )
 
     pv = _f(inv.get("mb_daily_pv_generation"))
     charge_pv = _f(inv.get("mb_daily_battery_charge_from_pv"))
@@ -1149,10 +1152,9 @@ REMOVED_KEYS: tuple[str, ...] = ("battery_stored_energy",)
 # ---------------------------------------------------------------------------
 
 
-class SungrowDerivedSensor(SensorEntity):
+class SungrowDerivedSensor(SungrowNamedEntity, SensorEntity):
     """Computed sensor; value comes from the engine."""
 
-    _attr_has_entity_name = True
     _attr_should_poll = False
     entity_description: SungrowDerivedSensorEntityDescription
 
@@ -1166,6 +1168,7 @@ class SungrowDerivedSensor(SensorEntity):
         self.entity_description = description
         self._attr_unique_id = make_unique_id(coordinator.config_entry, description.key)
         self._attr_device_info = coordinator.device_info
+        self._set_names(description.device, str(description.name))
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

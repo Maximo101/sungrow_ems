@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.7
+
+### Changed
+- **iHomeManager entities are tagged "(iHM)" in their names**, for example *Battery SoC (iHM)*, so values that both devices report can be told apart on dashboards. Entity IDs and unique IDs are unchanged.
+- **Device pages show the address each device is polled on**, for example *SH10RS @ <host>* and *iHomeManager @ <host>*.
+
+### Fixed
+- *Battery charging power* showed "-0 W" while the battery was idle.
+
+No entity IDs or unique IDs changed.
+
 ## 0.1.6
 
 ### Added

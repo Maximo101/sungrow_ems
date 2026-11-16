@@ -229,6 +229,31 @@ def _battery(power_w: float, flow: int, **kwargs: object) -> dict[str, object]:
     )
 
 
+def test_battery_energy_two_stack_example() -> None:
+    """38.6 kWh rated, Min SoC 5 %, Max SoC 100 %, Backup reserve 6 %."""
+    limits = {"min_soc": 5.0, "max_soc": 100.0, "reserve_soc": 6.0}
+    full = battery_energy(100.0, 38.6, off_grid=False, **limits)
+    assert full is not None
+    assert full.usable_capacity == pytest.approx(36.67)
+    assert full.usable == pytest.approx(34.4698)
+    assert full.to_full == 0
+    # Off grid the reserve is released.
+    backup = battery_energy(100.0, 38.6, off_grid=True, **limits)
+    assert backup is not None and backup.usable == pytest.approx(36.67)
+    # At the reserve nothing is left for daily use; 94 % of the window to refill.
+    low = battery_energy(6.0, 38.6, off_grid=False, **limits)
+    assert low is not None and low.usable == 0
+    assert low.to_full == pytest.approx(36.67 * 0.94)
+
+
+def test_charging_power_is_never_negative_zero() -> None:
+    out = compute_derived(
+        {"mb_battery_power": 0.0}, {}, {}, efficiency=0.85, max_daily=200, capacity=None
+    )
+    assert str(out["battery_charging_power"]) == "0.0"
+    assert str(out["battery_discharging_power"]) == "0.0"
+
+
 def test_battery_time_estimates() -> None:
     charging = _battery(-3000.0, 0b0011)
     assert charging["battery_status"] == "Charging"

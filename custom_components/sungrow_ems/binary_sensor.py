@@ -182,7 +182,7 @@ class SungrowBinarySensor(SungrowEmsEntity, BinarySensorEntity):
         coordinator: SungrowEmsCoordinator,
         description: SungrowBinarySensorEntityDescription,
     ) -> None:
-        super().__init__(coordinator, description.key)
+        super().__init__(coordinator, description.key, str(description.name))
         self.entity_description = description
 
     @property

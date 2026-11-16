@@ -56,7 +56,7 @@ class SungrowRegisterSensor(SungrowEmsEntity, SensorEntity):
         coordinator: SungrowEmsCoordinator,
         description: SungrowSensorEntityDescription,
     ) -> None:
-        super().__init__(coordinator, description.key)
+        super().__init__(coordinator, description.key, str(description.name))
         self.entity_description = description
 
     @property
@@ -109,10 +109,11 @@ class SungrowPollStatusSensor(SungrowEmsEntity, SensorEntity):
     )
 
     def __init__(self, coordinator: SungrowEmsCoordinator) -> None:
-        super().__init__(coordinator, f"{coordinator.device}_last_poll")
+        name = "Last successful poll"
+        super().__init__(coordinator, f"{coordinator.device}_last_poll", name)
         self.entity_description = SensorEntityDescription(
             key=f"{coordinator.device}_last_poll",
-            name="Last successful poll",
+            name=name,
             icon="mdi:lan-connect"
             if coordinator.device is Device.INVERTER
             else "mdi:router-network",

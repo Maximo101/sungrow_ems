@@ -175,6 +175,10 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
         base = self.config_entry.unique_id or self.config_entry.entry_id
         return (DOMAIN, f"{base}_{self.device}")
 
+    def _model_line(self, model: str) -> str:
+        """Model as shown on the device page, with the address it is polled on."""
+        return f"{model} @ {self.hub.host}"
+
     @property
     def device_info(self) -> DeviceInfo:
         """DeviceInfo built from whatever identity registers have been read."""
@@ -187,7 +191,7 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
                 identifiers={self.device_identifier},
                 name=DEVICE_NAME_INVERTER,
                 manufacturer=MANUFACTURER,
-                model=model or "Hybrid inverter",
+                model=self._model_line(model or "Hybrid inverter"),
                 model_id=f"0x{code:04X}" if code is not None else None,
                 serial_number=_as_str(values.get("mb_serial_number"))
                 or self.config_entry.unique_id,
@@ -199,7 +203,7 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
             identifiers={self.device_identifier},
             name=DEVICE_NAME_IHM,
             manufacturer=MANUFACTURER,
-            model="iHomeManager",
+            model=self._model_line("iHomeManager"),
             model_id=f"0x{code:04X}"
             if code is not None
             else f"0x{IHM_DEVICE_TYPE_CODE:04X}",

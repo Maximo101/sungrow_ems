@@ -55,7 +55,9 @@ async def test_setup_creates_all_entities_and_two_devices(
         "Sungrow EMS iHomeManager",
     }
     inverter_device = next(d for d in devices if d.name == "Sungrow EMS Inverter")
-    assert inverter_device.model == "SH10RS"
+    assert inverter_device.model == "SH10RS @ inverter.test"
+    ihm_device = next(d for d in devices if d.name == "Sungrow EMS iHomeManager")
+    assert ihm_device.model == "iHomeManager @ ihm.test"
     assert inverter_device.serial_number == SERIAL
     assert inverter_device.manufacturer == "Sungrow"
 
@@ -276,3 +278,32 @@ async def test_poll_status_sensor_stays_available(
     assert state.attributes["connected"] is True
     assert state.attributes["consecutive_failures"] == 0
     assert not [k for k in state.attributes if "write" in k]
+
+
+async def test_ihm_entities_are_tagged_and_keep_their_entity_ids(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Every iHomeManager entity name ends in " (iHM)"; no entity ID does."""
+    await _setup(hass, entry)
+    device_registry = dr.async_get(hass)
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    by_device: dict[str, list[er.RegistryEntry]] = {}
+    for entity in entities:
+        by_device.setdefault(
+            device_registry.async_get(entity.device_id).name, []
+        ).append(entity)
+    ihm_entities = by_device["Sungrow EMS iHomeManager"]
+    assert len(ihm_entities) > 50
+    assert all(e.original_name.endswith(" (iHM)") for e in ihm_entities)
+    assert not any(
+        "ihm" in e.entity_id.split("ihomemanager_", 1)[1] for e in ihm_entities
+    )
+    assert not any("iHM" in e.original_name for e in by_device["Sungrow EMS Inverter"])
+
+    state = hass.states.get(f"{IHM}battery_soc")
+    assert state.name == "Sungrow EMS iHomeManager Battery SoC (iHM)"
+    assert (
+        hass.states.get(f"{INV}battery_soc").name == "Sungrow EMS Inverter Battery SoC"
+    )
+    assert hass.states.get(f"{IHM}last_successful_poll") is not None
+    assert hass.states.get(f"{IHM}grid_import_safe") is not None
