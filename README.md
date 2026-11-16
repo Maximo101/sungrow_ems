@@ -132,13 +132,16 @@ You can add a custom respository.
 
 | Field | Default | Notes |
 |---|---|---|
-| Inverter host | — | IP of the WiNet-S / LAN interface |
-| Inverter port | 502 | |
-| Inverter unit ID | 1 | |
+| Inverter host IP | — | IP Address of the WiNet-S / LAN interface (Direct ethernet connection prefered) |
+| Inverter port | 502 | | (default)
+| Inverter unit ID | 1 | | (default)
 | Use iHomeManager | on | Turn off if you don't have one |
-| iHomeManager host | — | Required when the iHM is enabled |
+| iHomeManager host IP | — | IP Address of iHM. (Required when the iHM is enabled) |
 | iHomeManager port | 503 | Use 504 if 503 is taken |
 | iHomeManager unit ID | 247 | Fixed by the iHM protocol; leave as is |
+
+**NOTE: Set a Static IP address in your router to fix the IP addresses of your devices**
+If using 504 Port on iHM, you will need to login to your sungrow settings and enable port 504.
 
 The integration reads the inverter serial number during setup and uses it as the entry's unique ID, so the same inverter can't be added twice. Hosts and ports can be changed later with **Reconfigure**.
 
@@ -168,7 +171,9 @@ Saving changed options reloads the integration.
 
 ## Entities
 
-Two devices are created: **Sungrow EMS Inverter** and **Sungrow EMS iHomeManager**. Some rarely useful or unreliable sensors are disabled by default; enable them from the device page if you need them. Holding-register readbacks (settings) are diagnostic entities.
+Two devices are created: **Sungrow EMS Inverter** and **Sungrow EMS iHomeManager**.
+Some rarely useful or unreliable sensors are disabled by default; enable them from the device page if you need them. Holding-register readbacks (settings) are diagnostic entities.
+Refer to table below for examples.
 
 ### Battery sensors
 
@@ -240,7 +245,8 @@ ruff check . && ruff format --check .
 
 ## Credits
 
-Sungrow EMS started life as a fork of **[sungrow-solarcloud-haos-integration](https://github.com/Cyber40014/sungrow-solarcloud-haos-integration)** by **[@Cyber40014](https://github.com/Cyber40014)**. Huge thanks for the original integration: its entity keys (`mb_*`, `ihm_*`) and register selection are the foundation this project was built on. Since then the code has been rewritten as a local-only Modbus integration, with the cloud API removed and the coordinators, Modbus hub, register map and derived sensors redone from scratch.
+Sungrow EMS started life as a fork of **[sungrow-solarcloud-haos-integration](https://github.com/Cyber40014/sungrow-solarcloud-haos-integration)** by **[@Cyber40014](https://github.com/Cyber40014)**.
+Huge thanks for the original integration: its entity keys (`mb_*`, `ihm_*`) and register selection are the foundation this project was built on. Since then the code has been rewritten as a local-only Modbus integration, with the cloud API removed and the coordinators, Modbus hub, register map and derived sensors redone from scratch.
 
 Also thanks to:
 
