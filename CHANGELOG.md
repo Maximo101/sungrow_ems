@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.8
+
+### Added
+- **Connection** binary sensor for each device (connectivity, diagnostic). It turns off when the device's entities go unavailable and back on when polling recovers. It only changes on a real connect or disconnect, so it adds nothing to the Activity log or the database while things are running normally.
+
+### Changed
+- **Last successful poll is disabled by default on new installs.** It changes on every poll (every 10 s), which filled the Activity log and the database. Existing installs keep it as it is: disable it on each device page if you don't want it. Poll counters are also in *Download diagnostics*.
+
+No entity IDs or unique IDs changed.
+
 ## 0.1.7
 
 ### Changed

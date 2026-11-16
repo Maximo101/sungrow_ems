@@ -45,7 +45,7 @@ async def test_setup_creates_all_entities_and_two_devices(
     assert entry.state is ConfigEntryState.LOADED
 
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
-    assert len(entities) == 190
+    assert len(entities) == 192
     assert {e.domain for e in entities} == {"sensor", "binary_sensor"}
     assert all(e.unique_id.endswith("_ems") for e in entities)
 
@@ -269,15 +269,68 @@ async def test_sentinel_keeps_previous_value(
     assert hass.states.get(f"{INV}battery_soc").state == "65.5"
 
 
-async def test_poll_status_sensor_stays_available(
+async def test_poll_status_sensor_is_disabled_by_default(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    await _setup(hass, entry)
+    registry = er.async_get(hass)
+    for prefix in (INV, IHM):
+        entity = registry.async_get(f"{prefix}last_successful_poll")
+        assert (
+            entity is not None
+            and entity.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+        )
+        assert hass.states.get(f"{prefix}last_successful_poll") is None
+
+
+async def test_connection_sensor_is_quiet_until_the_device_drops(
     hass: HomeAssistant, entry: MockConfigEntry, inverter: FakeDevice
 ) -> None:
     await _setup(hass, entry)
-    state = hass.states.get(f"{INV}last_successful_poll")
-    assert state.state not in (STATE_UNAVAILABLE, "unknown")
-    assert state.attributes["connected"] is True
-    assert state.attributes["consecutive_failures"] == 0
-    assert not [k for k in state.attributes if "write" in k]
+    entity_id = "binary_sensor.sungrow_ems_inverter_connection"
+    first = hass.states.get(entity_id)
+    assert first.state == STATE_ON
+    assert first.attributes["device_class"] == "connectivity"
+    assert "last_error" not in first.attributes
+    ihm_state = hass.states.get("binary_sensor.sungrow_ems_ihomemanager_connection")
+    assert ihm_state.name == "Sungrow EMS iHomeManager Connection (iHM)"
+
+    # Good polls with changing values: no new state, so nothing is logged.
+    for power in (1000, 2000, 3000):
+        inverter.set("mb_total_dc_power", power)
+        await _poll(hass)
+    assert hass.states.get(f"{INV}pv_dc_power").state == "3000"
+    assert hass.states.get(entity_id).last_updated == first.last_updated
+
+
+async def test_connection_sensor_goes_off_with_the_device(
+    hass: HomeAssistant, inverter: FakeDevice
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"inverter_host": "inverter.test", CONF_IHM_ENABLED: False},
+        options={CONF_FAILURE_THRESHOLD: 3, "retries": 0},
+        unique_id=SERIAL,
+        version=1,
+        minor_version=2,
+    )
+    await _setup(hass, entry)
+    entity_id = "binary_sensor.sungrow_ems_inverter_connection"
+    inverter.timeout_from = 0
+
+    for _ in range(2):
+        await _poll(hass, 70)
+        assert hass.states.get(entity_id).state == STATE_ON  # riding it out
+    await _poll(hass, 70)
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_OFF
+    assert state.attributes["last_error"]
+    assert hass.states.get(f"{INV}battery_soc").state == STATE_UNAVAILABLE
+
+    inverter.timeout_from = None
+    await _poll(hass, 70)
+    assert hass.states.get(entity_id).state == STATE_ON
+    assert "last_error" not in hass.states.get(entity_id).attributes
 
 
 async def test_ihm_entities_are_tagged_and_keep_their_entity_ids(
@@ -305,5 +358,5 @@ async def test_ihm_entities_are_tagged_and_keep_their_entity_ids(
     assert (
         hass.states.get(f"{INV}battery_soc").name == "Sungrow EMS Inverter Battery SoC"
     )
-    assert hass.states.get(f"{IHM}last_successful_poll") is not None
+    assert hass.states.get("binary_sensor.sungrow_ems_ihomemanager_connection")
     assert hass.states.get(f"{IHM}grid_import_safe") is not None

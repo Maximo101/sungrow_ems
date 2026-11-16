@@ -26,7 +26,7 @@ Why: register writes behave differently across models and regional firmware, and
 
 ## Key metrics
 
-A selection of the 187 entities (some are disabled by default). Entity IDs assume the default device names. iHomeManager entities are tagged "(iHM)" in their names; the tag is not part of the entity ID.
+A selection of the 192 entities (some are disabled by default). Entity IDs assume the default device names. iHomeManager entities are tagged "(iHM)" in their names; the tag is not part of the entity ID.
 
 | Metric | Entity | Unit | Source |
 |---|---|---|---|
@@ -53,7 +53,8 @@ A selection of the 187 entities (some are disabled by default). Entity IDs assum
 | Inverter state and temperature | `…inverter_running_state`, `…inverter_temperature` | text, °C | Inverter |
 | Grid voltage and frequency | `…ihomemanager_grid_voltage_a`, `…ihomemanager_grid_frequency` | V, Hz | iHM |
 | Off-grid, inverter fault, EV charger fault | `binary_sensor.sungrow_ems_inverter_off_grid_backup_mode`, `…inverter_inverter_fault`, `…ihomemanager_ev_charger_fault` | on/off | Calculated |
-| Poll health | `…inverter_last_successful_poll`, `…ihomemanager_last_successful_poll` | timestamp | Diagnostic |
+| Connection (on = being polled) | `binary_sensor.sungrow_ems_inverter_connection`, `…ihomemanager_connection` | on/off | Diagnostic |
+| Last successful poll, with counters (disabled by default) | `…inverter_last_successful_poll`, `…ihomemanager_last_successful_poll` | timestamp | Diagnostic |
 
 ### Energy dashboard
 

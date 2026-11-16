@@ -38,7 +38,7 @@ PACKAGE = Path(sensor_types.__file__).parent
 
 
 def test_entity_counts() -> None:
-    # 161 register sensors + 2 poll status + 24 derived + 3 binary = 190
+    # 161 register sensors + 2 poll status + 24 derived + 3 binary\n    # + 2 connection = 192
     assert len(SENSOR_DESCRIPTIONS) == 161 == len(REGISTERS_BY_KEY)
     assert len(DERIVED_SENSORS) == 24
     assert len(BINARY_SENSORS) == 3

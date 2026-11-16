@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Pre-release sanity check for sungrow_ems. Run from the repo root.
-# Usage: ./precheck.sh v0.1.7
+# Usage: ./precheck.sh v0.1.8
 set -u
-TAG="${1:-v0.1.7}"
+TAG="${1:-v0.1.8}"
 fail=0
 
 echo "== 1. Personal / site data =="

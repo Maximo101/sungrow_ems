@@ -91,7 +91,9 @@ class SungrowPollStatusSensor(SungrowEmsEntity, SensorEntity):
     """Timestamp of the last successful poll, with failure counters.
 
     Stays available while the device is down so you can see how long it has
-    been since the last good read.
+    been since the last good read. Disabled by default: it changes on every
+    poll, which fills the Activity log and the recorder. The Connection binary
+    sensor is the everyday health indicator.
     """
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
@@ -114,6 +116,7 @@ class SungrowPollStatusSensor(SungrowEmsEntity, SensorEntity):
         self.entity_description = SensorEntityDescription(
             key=f"{coordinator.device}_last_poll",
             name=name,
+            entity_registry_enabled_default=False,
             icon="mdi:lan-connect"
             if coordinator.device is Device.INVERTER
             else "mdi:router-network",

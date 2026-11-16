@@ -7,6 +7,12 @@
   1, 2, 3, 6 (seen in the field: 8, 9 and 10).
 * Inverter fault: any bit set in the inverter's fault registers (13052-13067,
   13072-13077). Alarm-only registers are reported as attributes.
+* Connection (one per device): on while the device is being polled
+  successfully, off once its entities have gone unavailable. It only changes
+  state on a real connect or disconnect, so it adds nothing to the Activity
+  log or the database during normal running. Poll counters are in
+  *Download diagnostics* and on the (disabled by default) Last successful
+  poll sensor.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -169,7 +176,8 @@ async def async_setup_entry(
         coordinator = runtime.coordinator_for(description.device)
         if coordinator is not None:
             entities.append(SungrowBinarySensor(coordinator, description))
-    async_add_entities(entities)
+    connections = [SungrowConnectionSensor(c) for c in runtime.coordinators]
+    async_add_entities([*entities, *connections])
 
 
 class SungrowBinarySensor(SungrowEmsEntity, BinarySensorEntity):
@@ -212,3 +220,46 @@ class SungrowBinarySensor(SungrowEmsEntity, BinarySensorEntity):
         if data is None or self.entity_description.attrs_fn is None:
             return None
         return self.entity_description.attrs_fn(data) or None
+
+
+class SungrowConnectionSensor(SungrowEmsEntity, BinarySensorEntity):
+    """Whether this device is being polled successfully.
+
+    Off only after ``failure_threshold`` failed polls in a row, the same moment
+    the device's other entities go unavailable. Short dropouts, which the
+    last-known-good values ride through, do not switch it off.
+
+    Its state and attributes stay the same from one good poll to the next, so
+    Home Assistant writes nothing to the Activity log or the recorder until
+    the connection actually changes.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: SungrowEmsCoordinator) -> None:
+        key = f"{coordinator.device}_connection"
+        super().__init__(coordinator, key, "Connection")
+        self.entity_description = BinarySensorEntityDescription(
+            key=key, name="Connection"
+        )
+
+    @property
+    def available(self) -> bool:
+        """Always available: being off is the point of this sensor."""
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return (
+            self.coordinator.last_update_success and self.coordinator.data is not None
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """The error that took the device offline. Empty while connected, so
+        a good poll never changes the state."""
+        if self.is_on:
+            return None
+        error = self.coordinator.last_exception
+        return {"last_error": str(error) if error is not None else None}
