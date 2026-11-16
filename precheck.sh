@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Pre-release sanity check for sungrow_ems. Run from the repo root.
-# Usage: ./precheck.sh v0.1.5
+# Usage: ./precheck.sh v0.1.6
 set -u
-TAG="${1:-v0.1.5}"
+TAG="${1:-v0.1.6}"
 fail=0
 
 echo "== 1. Personal / site data =="
@@ -25,7 +25,7 @@ if [ -f hacs.json ]; then python3 -m json.tool hacs.json >/dev/null && echo "ok:
 [ -f README.md ] && echo "ok: README.md present" || { echo "!! README.md missing"; fail=1; }
 [ -f LICENSE ] && echo "ok: LICENSE present" || { echo "!! LICENSE missing (check upstream licence terms)"; fail=1; }
 
-echo "== 3. Read-only by design =="
+echo "== 3. Read-only =="
 if ls custom_components/sungrow_ems/{select,number,switch,button}.py custom_components/sungrow_ems/services.yaml 2>/dev/null; then
   echo "!! Control platform or service files present: this integration is read-only"; fail=1
 else

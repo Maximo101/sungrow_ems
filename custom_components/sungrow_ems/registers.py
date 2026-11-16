@@ -354,8 +354,11 @@ IHM_ON_OFF: Final[Mapping[int, str]] = MappingProxyType(
     {1: "On", 0: "Off", 0xAA: "On", 0x55: "Off"}
 )
 
+#: 13030 is "Reserved" in [INV] V1.1.4. Older firmware reported 0xAA / 0x55
+#: here (the SunGather mapping); current firmware returns 0, shown as "Not
+#: reported". Use the Off-grid (backup) mode binary sensor (13000) instead.
 GRID_STATES: Final[Mapping[int, str]] = MappingProxyType(
-    {0xAA: "Off-grid", 0x55: "On-grid"}
+    {0xAA: "Off-grid", 0x55: "On-grid", 0: "Not reported"}
 )
 
 
@@ -851,7 +854,7 @@ INVERTER_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
         U16,
         options=GRID_STATES,
         verified=False,
-        note="Reserved in V1.1.4; SunGather maps 0xAA off-grid / 0x55 on-grid.",
+        note="Reserved in V1.1.4 (reads 0); SunGather maps 0xAA off-grid / 0x55 on-grid.",
     ),
     _inv("mb_phase_a_current", 13031, S16, scale=0.1, unit="A"),
     _inv("mb_phase_b_current", 13032, S16, scale=0.1, unit="A"),

@@ -808,11 +808,20 @@ IHM_SETTING_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
         "ihm_power_rating",
         diagnostic=True,
     ),
-    _d("ihm_feed_in_limitation", "Feed-in limitation", "enum", diagnostic=True),
+    # Off by default: 8028 / 8031 are the external (Modbus) limitation layer
+    # and do not show the export limit set in iSolarCloud.
+    _d(
+        "ihm_feed_in_limitation",
+        "Feed-in limitation",
+        "enum",
+        enabled=False,
+        diagnostic=True,
+    ),
     _d(
         "ihm_feed_in_limitation_ratio",
         "Feed-in limitation ratio",
         "percent",
+        enabled=False,
         diagnostic=True,
     ),
     _d(

@@ -44,12 +44,26 @@ Changes from the YAML, all deliberate:
   * Battery capacity has no hard-coded fallback: options override, then iHM
     8147, inverter 13039, inverter 5639, otherwise unavailable.
 
+Also replaces three UI template helpers (Battery Status, Time Until Fully
+Charged, Battery Time Remaining). None of them uses a fixed number:
+  * Battery status comes from the inverter's own power-flow bits (13001),
+    with the sign of the battery power as the fallback.
+  * The reported SoC is treated as a percentage of the window between Min
+    SoC (13059) and Max SoC (13058), so usable capacity = rated capacity x
+    (Max SoC - Min SoC). This is how the inverter scales the SoC it reports;
+    it is not written in the protocol document.
+  * Battery usable energy is what can be drawn before discharging stops: down
+    to the Backup reserve SoC (13100) on grid, down to Min SoC when off grid.
+  * The two time estimates divide the energy still to go by the battery power
+    averaged over two minutes.
+
 Kept as in the YAML (flag for a later decision): Daily Consumption subtracts
 only the PV share of battery charging and applies the discharge efficiency.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -65,13 +79,15 @@ from homeassistant.components.sensor import (
     SensorExtraStoredData,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import UnitOfEnergy, UnitOfTime
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    BATTERY_IDLE_POWER_W,
+    BATTERY_POWER_AVERAGE_SECONDS,
     CONF_BATTERY_CAPACITY,
     CONF_DISCHARGE_EFFICIENCY,
     CONF_SPIKE_MAX_DAILY,
@@ -92,7 +108,7 @@ from .coordinator import (
     get_option,
 )
 from .entity import make_unique_id
-from .registers import POWER_FLOW_BITS, Device, decode_bits
+from .registers import POWER_FLOW_BITS, RUNNING_STATE_OFF_GRID, Device, decode_bits
 from .sensor_types import ENERGY_KWH_PRESET, PERCENT_PRESET, POWER_W_PRESET
 
 _LOGGER = logging.getLogger(__name__)
@@ -252,6 +268,30 @@ class LeftRiemann:
         return changed
 
 
+@dataclass(slots=True)
+class PowerAverager:
+    """Mean of the power samples seen in the last ``window`` seconds."""
+
+    window: float
+    samples: deque[tuple[float, float]] = field(default_factory=deque)
+
+    def clear(self) -> None:
+        self.samples.clear()
+
+    def update(self, power_w: float | None, now: float) -> None:
+        if power_w is not None:
+            self.samples.append((now, float(power_w)))
+        cutoff = now - self.window
+        while self.samples and self.samples[0][0] < cutoff:
+            self.samples.popleft()
+
+    @property
+    def mean(self) -> float | None:
+        if not self.samples:
+            return None
+        return sum(power for _, power in self.samples) / len(self.samples)
+
+
 # ---------------------------------------------------------------------------
 # Formulas (pure Python)
 # ---------------------------------------------------------------------------
@@ -311,6 +351,110 @@ def _f(value: Any) -> float | None:
         return None
 
 
+BATTERY_CHARGING = "Charging"
+BATTERY_DISCHARGING = "Discharging"
+BATTERY_IDLE = "Idle"
+BATTERY_STATES: tuple[str, ...] = (BATTERY_CHARGING, BATTERY_DISCHARGING, BATTERY_IDLE)
+_BATTERY_ICONS: Mapping[str, str] = {
+    BATTERY_CHARGING: "mdi:battery-charging",
+    BATTERY_DISCHARGING: "mdi:battery-arrow-down",
+    BATTERY_IDLE: "mdi:battery",
+}
+
+#: Entity keys of the battery sensors.
+BATTERY_USABLE_ENERGY = "battery_usable_energy"
+BATTERY_STATUS = "battery_status"
+BATTERY_TIME_TO_FULL = "battery_time_to_full"
+BATTERY_TIME_TO_EMPTY = "battery_time_to_empty"
+
+FLOOR_BACKUP_RESERVE = "backup_reserve"
+FLOOR_MIN_SOC = "min_soc"
+
+
+def battery_status(flow_code: Any, battery_w: float | None) -> str | None:
+    """Charging / Discharging / Idle.
+
+    The inverter's power-flow bits (13001: bit 1 charging, bit 2 discharging)
+    decide. Without them, the sign of the battery power does (+ discharge,
+    - charge), with a small idle band around zero.
+    """
+    if flow_code is not None:
+        code = int(flow_code)
+        if (code >> 1) & 1:
+            return BATTERY_CHARGING
+        if (code >> 2) & 1:
+            return BATTERY_DISCHARGING
+        return BATTERY_IDLE
+    if battery_w is None:
+        return None
+    if battery_w <= -BATTERY_IDLE_POWER_W:
+        return BATTERY_CHARGING
+    if battery_w >= BATTERY_IDLE_POWER_W:
+        return BATTERY_DISCHARGING
+    return BATTERY_IDLE
+
+
+@dataclass(frozen=True, slots=True)
+class BatteryEnergy:
+    """Battery energy figures in kWh, all derived from live readings."""
+
+    usable_capacity: float  # rated capacity x (Max SoC - Min SoC)
+    stored: float  # above Min SoC
+    usable: float  # above the discharge floor
+    to_full: float  # still to charge before Max SoC
+    floor: str  # FLOOR_BACKUP_RESERVE or FLOOR_MIN_SOC
+    limits_known: bool  # Min SoC and Max SoC were both read
+
+
+def battery_energy(
+    soc: float | None,
+    capacity: float | None,
+    *,
+    min_soc: float | None,
+    max_soc: float | None,
+    reserve_soc: float | None,
+    off_grid: bool | None,
+) -> BatteryEnergy | None:
+    """Energy in the battery, from the reported SoC and the rated capacity.
+
+    The reported SoC runs from 0 % at Min SoC to 100 % at Max SoC, so the
+    capacity it refers to is the rated capacity scaled by that window. If the
+    two limits cannot be read, the full rated capacity is used and
+    ``limits_known`` is False.
+
+    Discharging stops at the Backup reserve SoC while the grid is up; the
+    reserve is only released in off-grid (backup) operation. An unknown grid
+    state is treated as on grid.
+    """
+    if soc is None or capacity is None:
+        return None
+    limits_known = min_soc is not None and max_soc is not None and max_soc > min_soc
+    window = 1.0
+    if limits_known:
+        assert min_soc is not None and max_soc is not None
+        window = (max_soc - min_soc) / 100
+    usable_capacity = capacity * window
+    level = min(max(soc, 0.0), 100.0)
+    reserve = 0.0
+    if not off_grid and reserve_soc is not None:
+        reserve = min(max(reserve_soc, 0.0), 100.0)
+    return BatteryEnergy(
+        usable_capacity=usable_capacity,
+        stored=usable_capacity * level / 100,
+        usable=usable_capacity * max(level - reserve, 0.0) / 100,
+        to_full=usable_capacity * (100.0 - level) / 100,
+        floor=FLOOR_BACKUP_RESERVE if reserve > 0 else FLOOR_MIN_SOC,
+        limits_known=limits_known,
+    )
+
+
+def _minutes(energy_kwh: float, power_w: float | None) -> int | None:
+    """Whole minutes to move ``energy_kwh`` at ``power_w``; None if too slow."""
+    if power_w is None or power_w < BATTERY_IDLE_POWER_W:
+        return None
+    return round(energy_kwh / (power_w / 1000) * 60)
+
+
 def _split_pct(parts: Sequence[float], total: float) -> list[int]:
     """Whole percentages of ``total`` that always add up to exactly 100.
 
@@ -337,8 +481,14 @@ def compute_derived(
     efficiency: float,
     max_daily: float,
     capacity: float | None,
+    off_grid: bool | None = None,
+    average_battery_w: float | None = None,
 ) -> dict[str, Any]:
-    """All non-stateful derived values. A value is None when an input is missing."""
+    """All non-stateful derived values. A value is None when an input is missing.
+
+    ``average_battery_w`` is the smoothed battery power (+ discharge) used by
+    the two time estimates; the instantaneous reading is used when it is None.
+    """
     out: dict[str, Any] = {}
 
     grid_kw = _f(ihm.get("ihm_grid_active_power"))  # + import, - export
@@ -447,12 +597,54 @@ def compute_derived(
     soc = _f(inv.get("mb_battery_soc"))
     if soc is None:
         soc = _f(ihm.get("ihm_battery_soc"))
-    out["battery_stored_energy"] = (
-        None if soc is None or capacity is None else round(soc / 100 * capacity, 2)
-    )
-
     code = inv.get("mb_power_flow_status")
     out["system_status"] = system_status(None if code is None else int(code))
+
+    # --- Battery: status, usable energy, time to full / empty ---------------
+    status = battery_status(code, battery_w)
+    energy = battery_energy(
+        soc,
+        capacity,
+        min_soc=_f(inv.get("mb_min_soc")),
+        max_soc=_f(inv.get("mb_max_soc")),
+        reserve_soc=_f(inv.get("mb_backup_reserve_soc")),
+        off_grid=off_grid,
+    )
+    average_w = battery_w if average_battery_w is None else average_battery_w
+    to_full = to_empty = None
+    if energy is not None and status == BATTERY_CHARGING and average_w is not None:
+        to_full = _minutes(energy.to_full, -average_w)
+    if energy is not None and status == BATTERY_DISCHARGING:
+        to_empty = _minutes(energy.usable, average_w)
+    out[BATTERY_STATUS] = status
+    out[BATTERY_USABLE_ENERGY] = None if energy is None else round(energy.usable, 2)
+    out[BATTERY_TIME_TO_FULL] = to_full
+    out[BATTERY_TIME_TO_EMPTY] = to_empty
+
+    details: dict[str, dict[str, Any]] = {}
+    if energy is not None:
+        power = None if average_w is None else round(abs(average_w))
+        details[BATTERY_USABLE_ENERGY] = {
+            "usable_capacity_kwh": round(energy.usable_capacity, 2),
+            "stored_energy_kwh": round(energy.stored, 2),
+            "reserved_energy_kwh": round(energy.stored - energy.usable, 2),
+            "energy_to_full_kwh": round(energy.to_full, 2),
+            "discharge_floor": energy.floor,
+            "min_soc": _f(inv.get("mb_min_soc")),
+            "max_soc": _f(inv.get("mb_max_soc")),
+            "backup_reserve_soc": _f(inv.get("mb_backup_reserve_soc")),
+            "soc_limits_known": energy.limits_known,
+        }
+        details[BATTERY_TIME_TO_FULL] = {
+            "energy_to_full_kwh": round(energy.to_full, 2),
+            "average_power_w": power if status == BATTERY_CHARGING else None,
+        }
+        details[BATTERY_TIME_TO_EMPTY] = {
+            "usable_energy_kwh": round(energy.usable, 2),
+            "average_power_w": power if status == BATTERY_DISCHARGING else None,
+            "discharge_floor": energy.floor,
+        }
+    out["battery_details"] = details
     return out
 
 
@@ -512,6 +704,8 @@ class DerivedEngine:
         self.daily_export = DailyMeter(max_delta=max_jump)
         self.charge_cumulative = LeftRiemann(max_gap=INTEGRATION_MAX_GAP_SECONDS)
         self.daily_charge_total = DailyMeter(max_delta=max_jump)
+        self.battery_average = PowerAverager(window=BATTERY_POWER_AVERAGE_SECONDS)
+        self._battery_status: str | None = None
 
         self._ready: set[str] = set()
         self._listeners: list[Callable[[], None]] = []
@@ -571,12 +765,12 @@ class DerivedEngine:
 
     @property
     def battery_capacity(self) -> float | None:
-        """Usable capacity in kWh, or None when nothing reports it.
+        """Rated capacity in kWh, or None when nothing reports it.
 
         Order: the options override (when above 0), then what the hardware
         reports: iHM total rated capacity (8147), inverter battery capacity
         (13039), inverter battery capacity (5639). No hard-coded fallback, so
-        Battery stored energy shows unavailable rather than a wrong number on
+        Battery usable energy shows unavailable rather than a wrong number on
         a system with a different battery.
         """
         if self.capacity_option > 0:
@@ -614,6 +808,15 @@ class DerivedEngine:
             return {}
         return coordinator.data.values
 
+    @property
+    def off_grid(self) -> bool | None:
+        """True in off-grid (backup) operation, None when the state is unknown."""
+        coordinator = self.inverter
+        if coordinator.data is None or not coordinator.last_update_success:
+            return None
+        code = coordinator.data.raw.get("mb_running_state")
+        return None if code is None else code == RUNNING_STATE_OFF_GRID
+
     def _update(self) -> None:
         today = dt_util.now().date()
         self.day_start = dt_util.start_of_local_day(today)
@@ -630,10 +833,19 @@ class DerivedEngine:
         if DAILY_EXPORT in ready and GRID_EXPORT_SAFE in ready:
             self.daily_export.update(self.export_safe.value, today)
 
+        now = time.monotonic()
         battery_w = _f(inv.get("mb_battery_power"))
         charging_w = None if battery_w is None else max(-battery_w, 0.0)
         if BATTERY_CHARGE_CUMULATIVE in ready:
-            self.charge_cumulative.update(charging_w, time.monotonic())
+            self.charge_cumulative.update(charging_w, now)
+
+        # Start the average again whenever the battery changes direction, so
+        # the time estimates never mix charging and discharging samples.
+        status = battery_status(inv.get("mb_power_flow_status"), battery_w)
+        if status != self._battery_status:
+            self._battery_status = status
+            self.battery_average.clear()
+        self.battery_average.update(battery_w, now)
         if DAILY_BATTERY_CHARGE_TOTAL in ready and BATTERY_CHARGE_CUMULATIVE in ready:
             self.daily_charge_total.update(self.charge_cumulative.value, today)
 
@@ -649,6 +861,8 @@ class DerivedEngine:
             efficiency=self.efficiency,
             max_daily=self.max_daily,
             capacity=self.battery_capacity,
+            off_grid=self.off_grid,
+            average_battery_w=self.battery_average.mean,
         )
 
     def meter_value(self, key: str) -> float | None:
@@ -679,7 +893,7 @@ class DerivedEngine:
 # Entity descriptions
 # ---------------------------------------------------------------------------
 
-Kind = Literal["computed", "status", "spike", "meter", "integral"]
+Kind = Literal["computed", "status", "battery", "spike", "meter", "integral"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -690,6 +904,10 @@ class SungrowDerivedSensorEntityDescription(SensorEntityDescription):
     kind: Kind = "computed"
     requires_ihm: bool = False
     daily_total: bool = False  # state_class TOTAL with last_reset at local midnight
+    #: Engine values that must be present for the entity to be available. When
+    #: set, the entity's own value may be None (state "unknown"), for example
+    #: Time until fully charged while the battery is discharging.
+    available_keys: tuple[str, ...] = ()
 
 
 #: Energy without a state class: each description sets its own (TOTAL for
@@ -870,14 +1088,47 @@ DERIVED_SENSORS: tuple[SungrowDerivedSensorEntityDescription, ...] = (
         **_PERCENT,
     ),
     SungrowDerivedSensorEntityDescription(
-        key="battery_stored_energy",
-        name="Battery stored energy",
+        key=BATTERY_USABLE_ENERGY,
+        name="Battery usable energy",
         device=Device.INVERTER,
+        kind="battery",
         device_class=SensorDeviceClass.ENERGY_STORAGE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         icon="mdi:home-battery-outline",
+    ),
+    SungrowDerivedSensorEntityDescription(
+        key=BATTERY_STATUS,
+        name="Battery status",
+        device=Device.INVERTER,
+        kind="battery",
+        device_class=SensorDeviceClass.ENUM,
+        options=list(BATTERY_STATES),
+    ),
+    SungrowDerivedSensorEntityDescription(
+        key=BATTERY_TIME_TO_FULL,
+        name="Time until fully charged",
+        device=Device.INVERTER,
+        kind="battery",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        suggested_display_precision=0,
+        icon="mdi:battery-clock",
+        available_keys=(BATTERY_USABLE_ENERGY, BATTERY_STATUS),
+    ),
+    SungrowDerivedSensorEntityDescription(
+        key=BATTERY_TIME_TO_EMPTY,
+        name="Time until fully discharged",
+        device=Device.INVERTER,
+        kind="battery",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        suggested_display_precision=0,
+        icon="mdi:battery-clock-outline",
+        available_keys=(BATTERY_USABLE_ENERGY, BATTERY_STATUS),
     ),
     SungrowDerivedSensorEntityDescription(
         key="system_status",
@@ -887,6 +1138,11 @@ DERIVED_SENSORS: tuple[SungrowDerivedSensorEntityDescription, ...] = (
     ),
 )
 
+
+#: Entity keys from earlier versions. Their registry entries are removed on
+#: setup. ``battery_stored_energy`` (SoC x capacity) became Battery usable
+#: energy in 0.1.6, which is a different quantity, so it starts a new entity.
+REMOVED_KEYS: tuple[str, ...] = ("battery_stored_energy",)
 
 # ---------------------------------------------------------------------------
 # Entities
@@ -958,6 +1214,28 @@ class SungrowSystemStatusSensor(SungrowDerivedSensor):
         if status is None:
             return system_status(None)
         return status
+
+
+class SungrowBatterySensor(SungrowDerivedSensor):
+    """Battery status, usable energy and the two time estimates."""
+
+    @property
+    def available(self) -> bool:
+        keys = self.entity_description.available_keys
+        if not keys:
+            return super().available
+        return all(self._engine.values.get(key) is not None for key in keys)
+
+    @property
+    def icon(self) -> str | None:
+        if self.entity_description.key == BATTERY_STATUS:
+            return _BATTERY_ICONS.get(self._engine.values.get(BATTERY_STATUS, ""))
+        return self.entity_description.icon
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        details = self._engine.values.get("battery_details") or {}
+        return details.get(self.entity_description.key)
 
 
 class SungrowSafeTotalSensor(SungrowDerivedSensor, RestoreSensor):
@@ -1131,6 +1409,12 @@ def async_build_derived_sensors(
     if engine is None:
         return []
     registry = er.async_get(hass)
+    for removed_key in REMOVED_KEYS:
+        stale = registry.async_get_entity_id(
+            "sensor", DOMAIN, make_unique_id(entry, removed_key)
+        )
+        if stale is not None:
+            registry.async_remove(stale)
     components: dict[str, SpikeFilter | DailyMeter | LeftRiemann] = {
         GRID_IMPORT_SAFE: engine.import_safe,
         GRID_EXPORT_SAFE: engine.export_safe,
@@ -1162,6 +1446,8 @@ def async_build_derived_sensors(
                 entities.append(
                     SungrowSystemStatusSensor(engine, coordinator, description)
                 )
+            case "battery":
+                entities.append(SungrowBatterySensor(engine, coordinator, description))
             case "spike":
                 assert isinstance(component, SpikeFilter)
                 entities.append(

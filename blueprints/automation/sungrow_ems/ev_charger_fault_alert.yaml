@@ -1,0 +1,104 @@
+blueprint:
+  name: "Sungrow EMS: EV charger fault alert"
+  description: >-
+    Sends a notification when the EV charger reports a fault. Uses the "EV
+    charger fault" binary sensor of Sungrow EMS, which carries the fault code
+    as an attribute.
+  domain: automation
+  author: Maximo101
+  source_url: https://github.com/Maximo101/sungrow_ems/blob/main/blueprints/automation/sungrow_ems/ev_charger_fault_alert.yaml
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    fault_sensor:
+      name: EV charger fault sensor
+      description: For Sungrow EMS, pick "EV charger fault" on the iHomeManager device.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+    hold:
+      name: Must last for
+      default:
+        minutes: 1
+      selector:
+        duration:
+    notify_action:
+      name: Notify action
+      description: The notify action to call, for example notify.mobile_app_my_phone.
+      default: notify.notify
+      selector:
+        text:
+    title:
+      name: Notification title
+      default: EV charger fault
+      selector:
+        text:
+    message:
+      name: Notification message
+      description: "You can use {{ fault_code }} and {{ status }}."
+      default: "The EV charger reported a fault (code {{ fault_code }})."
+      selector:
+        text:
+          multiline: true
+    notify_on_clear:
+      name: Also notify when the fault clears
+      default: false
+      selector:
+        boolean:
+    clear_message:
+      name: Fault cleared message
+      default: The EV charger fault has cleared.
+      selector:
+        text:
+          multiline: true
+    extra_actions:
+      name: Extra actions on fault (optional)
+      default: []
+      selector:
+        action:
+
+mode: queued
+max: 4
+
+variables:
+  fault_entity: !input fault_sensor
+  notify_on_clear: !input notify_on_clear
+  fault_code: "{{ state_attr(fault_entity, 'fault_code') | default('unknown', true) }}"
+  status: "{{ state_attr(fault_entity, 'status') | default('unknown', true) }}"
+
+triggers:
+  - trigger: state
+    id: fault
+    entity_id: !input fault_sensor
+    from: "off"
+    to: "on"
+    for: !input hold
+  - trigger: state
+    id: clear
+    entity_id: !input fault_sensor
+    from: "on"
+    to: "off"
+    for: !input hold
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: fault
+        sequence:
+          - action: !input notify_action
+            data:
+              title: !input title
+              message: !input message
+          - sequence: !input extra_actions
+      - conditions:
+          - condition: trigger
+            id: clear
+          - condition: template
+            value_template: "{{ notify_on_clear }}"
+        sequence:
+          - action: !input notify_action
+            data:
+              title: !input title
+              message: !input clear_message

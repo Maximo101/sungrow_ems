@@ -18,8 +18,12 @@ from custom_components.sungrow_ems.derived import (
     DERIVED_SENSORS,
     DailyMeter,
     LeftRiemann,
+    PowerAverager,
     SpikeFilter,
     _split_pct,
+    battery_energy,
+    battery_status,
+    compute_derived,
     system_status,
 )
 from custom_components.sungrow_ems.diagnostics import (
@@ -34,9 +38,9 @@ PACKAGE = Path(sensor_types.__file__).parent
 
 
 def test_entity_counts() -> None:
-    # 161 register sensors + 2 poll status + 21 derived + 3 binary = 187
+    # 161 register sensors + 2 poll status + 24 derived + 3 binary = 190
     assert len(SENSOR_DESCRIPTIONS) == 161 == len(REGISTERS_BY_KEY)
-    assert len(DERIVED_SENSORS) == 21
+    assert len(DERIVED_SENSORS) == 24
     assert len(BINARY_SENSORS) == 3
     keys = [d.key for d in (*SENSOR_DESCRIPTIONS, *DERIVED_SENSORS, *BINARY_SENSORS)]
     assert len(keys) == len(set(keys))
@@ -169,6 +173,95 @@ def test_system_status() -> None:
 
 
 # -- diagnostics --------------------------------------------------------------
+
+
+def test_battery_status_prefers_the_power_flow_bits() -> None:
+    assert battery_status(0b0010, 500.0) == "Charging"  # bit 1 wins over the sign
+    assert battery_status(0b0100, None) == "Discharging"
+    assert battery_status(0b1001, -2000.0) == "Idle"
+    # Without the bits: sign of the power, with an idle band around zero.
+    assert battery_status(None, -300.0) == "Charging"
+    assert battery_status(None, 300.0) == "Discharging"
+    assert battery_status(None, 20.0) == "Idle"
+    assert battery_status(None, None) is None
+
+
+def test_battery_energy_uses_the_soc_window_and_the_reserve() -> None:
+    kwargs = {"min_soc": 5.0, "max_soc": 100.0, "reserve_soc": 6.0}
+    on_grid = battery_energy(65.5, 38.4, off_grid=False, **kwargs)
+    assert on_grid is not None
+    assert on_grid.usable_capacity == pytest.approx(36.48)
+    assert on_grid.stored == pytest.approx(36.48 * 0.655)
+    assert on_grid.usable == pytest.approx(36.48 * 0.595)
+    assert on_grid.to_full == pytest.approx(36.48 * 0.345)
+    assert on_grid.floor == "backup_reserve"
+    # Off grid the reserve is released.
+    off_grid = battery_energy(65.5, 38.4, off_grid=True, **kwargs)
+    assert off_grid is not None
+    assert off_grid.usable == pytest.approx(off_grid.stored)
+    assert off_grid.floor == "min_soc"
+    # At or below the reserve nothing is usable on grid.
+    low = battery_energy(4.0, 38.4, off_grid=None, **kwargs)
+    assert low is not None and low.usable == 0
+    # Limits unreadable: full rated capacity, flagged.
+    unknown = battery_energy(
+        50.0, 38.4, min_soc=None, max_soc=None, reserve_soc=None, off_grid=False
+    )
+    assert unknown is not None
+    assert unknown.usable_capacity == pytest.approx(38.4)
+    assert unknown.limits_known is False
+    # No capacity or no SoC: nothing is made up.
+    assert battery_energy(50.0, None, off_grid=False, **kwargs) is None
+    assert battery_energy(None, 38.4, off_grid=False, **kwargs) is None
+
+
+def _battery(power_w: float, flow: int, **kwargs: object) -> dict[str, object]:
+    inv = {
+        "mb_battery_soc": 65.5,
+        "mb_battery_power": power_w,
+        "mb_power_flow_status": flow,
+        "mb_min_soc": 5.0,
+        "mb_max_soc": 100.0,
+        "mb_backup_reserve_soc": 6.0,
+    }
+    return compute_derived(
+        inv, {}, {}, efficiency=0.85, max_daily=200.0, capacity=38.4, **kwargs
+    )
+
+
+def test_battery_time_estimates() -> None:
+    charging = _battery(-3000.0, 0b0011)
+    assert charging["battery_status"] == "Charging"
+    assert charging["battery_usable_energy"] == 21.71
+    assert charging["battery_time_to_full"] == 252  # 12.59 kWh at 3 kW
+    assert charging["battery_time_to_empty"] is None
+
+    discharging = _battery(2000.0, 0b1100)
+    assert discharging["battery_time_to_full"] is None
+    assert discharging["battery_time_to_empty"] == 651  # 21.71 kWh at 2 kW
+    # Off grid the backup reserve counts as usable.
+    off_grid = _battery(2000.0, 0b1100, off_grid=True)
+    assert off_grid["battery_time_to_empty"] == 717
+    # The smoothed power is used when given.
+    smoothed = _battery(2000.0, 0b1100, average_battery_w=1000.0)
+    assert smoothed["battery_time_to_empty"] == 1302
+    # Too little power for an estimate.
+    assert _battery(10.0, 0b0100)["battery_time_to_empty"] is None
+    assert _battery(0.0, 0b0001)["battery_status"] == "Idle"
+
+
+def test_power_averager_keeps_only_the_window() -> None:
+    average = PowerAverager(window=120.0)
+    assert average.mean is None
+    average.update(1000.0, 0.0)
+    average.update(3000.0, 60.0)
+    assert average.mean == 2000.0
+    average.update(None, 100.0)
+    assert average.mean == 2000.0
+    average.update(5000.0, 130.0)  # the sample at t=0 has left the window
+    assert average.mean == 4000.0
+    average.clear()
+    assert average.mean is None
 
 
 async def test_diagnostics_are_redacted(

@@ -18,8 +18,8 @@ UNIQUE_ID_SUFFIX: Final = "_ems"
 DEVICE_NAME_INVERTER: Final = "Sungrow EMS Inverter"
 DEVICE_NAME_IHM: Final = "Sungrow EMS iHomeManager"
 
-#: Platforms set up by __init__.py. Read-only by design: sensors only. Control
-#: platforms (select, number, switch) and services are permanently out of scope.
+#: Platforms set up by __init__.py. Read-only: sensors only. There are no
+#: control platforms (select, number, switch) or services at this stage.
 PLATFORMS: Final[list[Platform]] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ MAX_FAILURE_THRESHOLD: Final = 60
 # ---------------------------------------------------------------------------
 #: Option value. 0 = auto: use what the hardware reports (iHM 8147, then
 #: inverter 13039, then inverter 5639). There is deliberately no hard-coded
-#: capacity: if nothing reports one, Battery stored energy is unavailable.
+#: capacity: if nothing reports one, Battery usable energy is unavailable.
 DEFAULT_BATTERY_CAPACITY_OPTION: Final = 0.0
 MAX_BATTERY_CAPACITY: Final = 200.0
 
@@ -116,6 +116,14 @@ MAX_SPIKE_REBASELINE_COUNT: Final = 30
 #: than this between samples is skipped rather than integrated, so a restart
 #: or outage never adds "last power x downtime".
 INTEGRATION_MAX_GAP_SECONDS: Final = 300.0
+
+#: Battery time estimates average the battery power over this many seconds, so
+#: a kettle or a passing cloud does not make the estimate jump on every poll.
+BATTERY_POWER_AVERAGE_SECONDS: Final = 120.0
+#: Below this average power (W) no time estimate is given (it would run to
+#: hundreds of hours). Also the idle band for Battery status when the
+#: inverter's power-flow bits (13001) are not available.
+BATTERY_IDLE_POWER_W: Final = 50.0
 
 # ---------------------------------------------------------------------------
 # Hub internals

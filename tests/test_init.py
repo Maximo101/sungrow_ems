@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE
+from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -19,6 +19,7 @@ from custom_components.sungrow_ems.const import (
     CONF_IHM_ENABLED,
     DOMAIN,
 )
+from custom_components.sungrow_ems.entity import make_unique_id
 
 from .conftest import SERIAL, FakeDevice
 
@@ -44,7 +45,7 @@ async def test_setup_creates_all_entities_and_two_devices(
     assert entry.state is ConfigEntryState.LOADED
 
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
-    assert len(entities) == 187
+    assert len(entities) == 190
     assert {e.domain for e in entities} == {"sensor", "binary_sensor"}
     assert all(e.unique_id.endswith("_ems") for e in entities)
 
@@ -91,6 +92,56 @@ async def test_binary_sensors_follow_the_registers(
         "binary_sensor.sungrow_ems_ihomemanager_ev_charger_fault",
     ):
         assert hass.states.get(entity_id).state == STATE_ON, entity_id
+
+
+async def test_battery_sensors(
+    hass: HomeAssistant, entry: MockConfigEntry, inverter: FakeDevice
+) -> None:
+    inverter.set("mb_battery_power", -3000)  # charging at 3 kW
+    inverter.set("mb_power_flow_status", 0b0011)
+    inverter.set("mb_min_soc", 50)  # 5.0 %
+    inverter.set("mb_max_soc", 1000)  # 100.0 %
+    inverter.set("mb_backup_reserve_soc", 6)
+    await _setup(hass, entry)
+    assert hass.states.get(f"{INV}battery_status").state == "Charging"
+    usable = hass.states.get(f"{INV}battery_usable_energy")
+    assert usable.state == "21.71"
+    assert usable.attributes["usable_capacity_kwh"] == 36.48
+    assert usable.attributes["discharge_floor"] == "backup_reserve"
+    assert hass.states.get(f"{INV}time_until_fully_charged").state == "252"
+    # Not discharging: the estimate is unknown, not unavailable.
+    assert hass.states.get(f"{INV}time_until_fully_discharged").state == STATE_UNKNOWN
+
+    inverter.set("mb_battery_power", 2000)
+    inverter.set("mb_power_flow_status", 0b1100)
+    await _poll(hass)
+    assert hass.states.get(f"{INV}battery_status").state == "Discharging"
+    assert hass.states.get(f"{INV}time_until_fully_charged").state == STATE_UNKNOWN
+    assert hass.states.get(f"{INV}time_until_fully_discharged").state == "651"
+
+    # Off grid, the backup reserve becomes usable.
+    inverter.set("mb_running_state", 0x1000)
+    await _poll(hass)
+    usable = hass.states.get(f"{INV}battery_usable_energy")
+    assert usable.state == "23.89"
+    assert usable.attributes["discharge_floor"] == "min_soc"
+
+
+async def test_battery_stored_energy_entity_is_removed(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    old = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        make_unique_id(entry, "battery_stored_energy"),
+        config_entry=entry,
+    )
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert registry.async_get(old.entity_id) is None
+    assert registry.async_get(f"{INV}battery_usable_energy") is not None
 
 
 async def test_no_write_function_is_ever_called(

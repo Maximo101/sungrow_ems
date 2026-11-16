@@ -1,0 +1,116 @@
+blueprint:
+  name: "Sungrow EMS: grid outage and restore alert"
+  description: >-
+    Sends a notification when the system switches to off-grid (backup)
+    operation, and another when the grid is back. Uses the "Off-grid (backup)
+    mode" binary sensor of Sungrow EMS.
+  domain: automation
+  author: Maximo101
+  source_url: https://github.com/Maximo101/sungrow_ems/blob/main/blueprints/automation/sungrow_ems/grid_outage_alert.yaml
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    off_grid_sensor:
+      name: Off-grid sensor
+      description: For Sungrow EMS, pick "Off-grid (backup) mode" on the inverter device.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+    hold:
+      name: Must last for
+      description: Ignores switch-overs shorter than this.
+      default:
+        minutes: 1
+        seconds: 30
+      selector:
+        duration:
+    notify_action:
+      name: Notify action
+      description: The notify action to call, for example notify.mobile_app_my_phone.
+      default: notify.notify
+      selector:
+        text:
+    outage_title:
+      name: Outage title
+      default: Grid outage
+      selector:
+        text:
+    outage_message:
+      name: Outage message
+      default: The grid is down. The system is running off grid on backup power.
+      selector:
+        text:
+          multiline: true
+    notify_on_restore:
+      name: Also notify when the grid is back
+      default: true
+      selector:
+        boolean:
+    restore_title:
+      name: Restore title
+      default: Grid restored
+      selector:
+        text:
+    restore_message:
+      name: Restore message
+      default: The grid is back. The system is running normally.
+      selector:
+        text:
+          multiline: true
+    outage_actions:
+      name: Extra actions on outage (optional)
+      description: For example turn off large loads.
+      default: []
+      selector:
+        action:
+    restore_actions:
+      name: Extra actions on restore (optional)
+      default: []
+      selector:
+        action:
+
+mode: queued
+max: 4
+
+variables:
+  notify_on_restore: !input notify_on_restore
+
+triggers:
+  - trigger: state
+    id: outage
+    entity_id: !input off_grid_sensor
+    from: "off"
+    to: "on"
+    for: !input hold
+  - trigger: state
+    id: restore
+    entity_id: !input off_grid_sensor
+    from: "on"
+    to: "off"
+    for: !input hold
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: outage
+        sequence:
+          - action: !input notify_action
+            data:
+              title: !input outage_title
+              message: !input outage_message
+          - sequence: !input outage_actions
+      - conditions:
+          - condition: trigger
+            id: restore
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ notify_on_restore }}"
+            then:
+              - action: !input notify_action
+                data:
+                  title: !input restore_title
+                  message: !input restore_message
+          - sequence: !input restore_actions

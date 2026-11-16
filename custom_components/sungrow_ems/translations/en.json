@@ -86,7 +86,7 @@
           "retries": "Extra attempts after a timeout, dropped connection or busy reply.",
           "ihm_request_interval": "The iHM protocol requires at least 1.0 s between requests.",
           "failure_threshold": "Consecutive failed polls (or invalid readings for one register) before entities show unavailable. Until then the last good value is kept.",
-          "battery_capacity": "Usable battery capacity in kWh. 0 = automatic: use the capacity the hardware reports (iHomeManager register 8147, then inverter registers 13039 and 5639). If none of them report it, Battery stored energy shows unavailable until you enter a value here.",
+          "battery_capacity": "Rated battery capacity in kWh. 0 = automatic: use the capacity the hardware reports (iHomeManager register 8147, then inverter registers 13039 and 5639). If none of them report it, Battery usable energy and the time estimates show unavailable until you enter a value here.",
           "discharge_efficiency": "Factor applied to DC battery discharge in Daily Consumption. Default 0.85.",
           "spike_max_jump": "Grid Import/Export Safe ignore a single step larger than this (kWh). Default 50.",
           "spike_max_daily": "Daily Consumption treats a daily import or export above this as corrupt and uses 0 instead. Default 200.",
