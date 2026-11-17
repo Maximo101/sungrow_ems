@@ -13,15 +13,22 @@ MANUFACTURER: Final = "Sungrow"
 #: original ``sungrow`` integration without registry collisions.
 UNIQUE_ID_SUFFIX: Final = "_ems"
 
-#: Device names. Distinct from the old integration's device names so new
-#: entity IDs come out clean instead of getting a ``_2`` suffix.
-DEVICE_NAME_INVERTER: Final = "Sungrow EMS Inverter"
-DEVICE_NAME_IHM: Final = "Sungrow EMS iHomeManager"
+#: Device names. The inverter is named after its model as read from the
+#: device type code (e.g. "SH10RS"); DEVICE_NAME_INVERTER is only used until
+#: the model is known or when the code is not in the protocol's table.
+#: Home Assistant shows entities as "<device name> <entity name>", e.g.
+#: "SH10RS Daily PV generation" and "iHM Battery SoC".
+DEVICE_NAME_INVERTER: Final = "Inverter"
+DEVICE_NAME_IHM: Final = "iHM"
 
-#: Added to the name of every iHomeManager entity, so a value that both
-#: devices report (battery SoC, battery power, ...) can be told apart wherever
-#: only the entity name is shown. Entity IDs do not include it.
-IHM_NAME_SUFFIX: Final = " (iHM)"
+#: Entity ID prefix per device. Entity IDs are set from these rather than
+#: derived from the device name, so they stay
+#: ``sensor.sungrow_ems_inverter_*`` / ``sensor.sungrow_ems_ihomemanager_*``
+#: (as in every earlier version) whatever the devices are called and
+#: whichever area they are in. Existing installs keep the entity IDs stored
+#: in the entity registry in any case.
+ENTITY_ID_PREFIX_INVERTER: Final = "sungrow_ems_inverter"
+ENTITY_ID_PREFIX_IHM: Final = "sungrow_ems_ihomemanager"
 
 #: Platforms set up by __init__.py. Read-only: sensors only. There are no
 #: control platforms (select, number, switch) or services at this stage.
@@ -140,3 +147,71 @@ UNSUPPORTED_RETRY_SECONDS: Final = 3600.0
 PLAN_RESET_SECONDS: Final = 6 * 3600.0
 #: Ceiling for the exponential reconnect backoff, seconds.
 RECONNECT_BACKOFF_MAX: Final = 60.0
+
+# ---------------------------------------------------------------------------
+# PVOutput.org uploader (optional, off by default). Stored in entry.options.
+# This is the only part of the integration that talks to the internet; it
+# only reads coordinator data and never touches the Modbus devices.
+# ---------------------------------------------------------------------------
+CONF_PVOUTPUT_ENABLED: Final = "pvoutput_enabled"
+CONF_PVOUTPUT_API_KEY: Final = "pvoutput_api_key"
+CONF_PVOUTPUT_SYSTEM_ID: Final = "pvoutput_system_id"
+CONF_PVOUTPUT_TIER: Final = "pvoutput_tier"
+CONF_PVOUTPUT_UPLOAD_MODE: Final = "pvoutput_upload_mode"
+CONF_PVOUTPUT_INTERVAL_MODE: Final = "pvoutput_interval_mode"
+#: Status Interval read from the PVOutput system profile (getsystem.jsp).
+CONF_PVOUTPUT_STATUS_INTERVAL: Final = "pvoutput_status_interval"
+CONF_PVOUTPUT_DAILY_TIME: Final = "pvoutput_daily_time"
+#: Send v1 as the lifetime PV counter with c1=2 instead of today's total.
+CONF_PVOUTPUT_CUMULATIVE: Final = "pvoutput_cumulative"
+#: Source mapping per PVOutput parameter: "pvoutput_v1" ... "pvoutput_v12",
+#: "pvoutput_b1" ... "pvoutput_b5".
+CONF_PVOUTPUT_V_PREFIX: Final = "pvoutput_"
+#: Live status sends either power (v2 + v4, recommended) or energy (v1 + v3).
+CONF_PVOUTPUT_SEND_VALUES: Final = "pvoutput_send_values"
+
+PVOUTPUT_TIER_FREE: Final = "free"
+PVOUTPUT_TIER_DONATION: Final = "donation"
+PVOUTPUT_MODE_LIVE: Final = "live"
+PVOUTPUT_MODE_DAILY: Final = "daily"
+PVOUTPUT_INTERVAL_AUTO: Final = "auto"
+PVOUTPUT_INTERVALS: Final[tuple[int, ...]] = (5, 10, 15)
+PVOUTPUT_SEND_POWER: Final = "power"
+PVOUTPUT_SEND_ENERGY: Final = "energy"
+
+DEFAULT_PVOUTPUT_TIER: Final = PVOUTPUT_TIER_FREE
+DEFAULT_PVOUTPUT_UPLOAD_MODE: Final = PVOUTPUT_MODE_LIVE
+DEFAULT_PVOUTPUT_STATUS_INTERVAL: Final = 5
+DEFAULT_PVOUTPUT_DAILY_TIME: Final = "23:55:00"
+DEFAULT_PVOUTPUT_SEND_VALUES: Final = PVOUTPUT_SEND_POWER
+
+#: Standard parameters (every account) and extended ones (donation only).
+PVOUTPUT_STANDARD_PARAMS: Final[tuple[str, ...]] = ("v1", "v2", "v3", "v4", "v5", "v6")
+#: Standard parameters sent per "send values" choice. PVOutput derives the
+#: other pair itself, so only one of v1+v3 / v2+v4 is sent.
+PVOUTPUT_POWER_PARAMS: Final[tuple[str, ...]] = ("v2", "v4", "v5", "v6")
+PVOUTPUT_ENERGY_PARAMS: Final[tuple[str, ...]] = ("v1", "v3", "v5", "v6")
+#: Donation only. v7-v12 are fed from any Home Assistant entity the user
+#: picks (none by default); b1-b5 are battery values (auto by default).
+PVOUTPUT_EXTENDED_PARAMS: Final[tuple[str, ...]] = (
+    "v7",
+    "v8",
+    "v9",
+    "v10",
+    "v11",
+    "v12",
+)
+PVOUTPUT_BATTERY_PARAMS: Final[tuple[str, ...]] = ("b1", "b2", "b3", "b4", "b5")
+#: Mapping choices besides a source key.
+PVOUTPUT_SOURCE_AUTO: Final = "auto"
+PVOUTPUT_SOURCE_NONE: Final = "none"
+
+#: X-Rate-Limit-Limit at or above this means the account is in donation mode
+#: (60 requests/hour free, 300 donation).
+PVOUTPUT_DONATION_RATE_LIMIT: Final = 300
+
+PVOUTPUT_BASE_URL: Final = "https://pvoutput.org/service/r2"
+PVOUTPUT_TIMEOUT: Final = 15.0
+
+SERVICE_PVOUTPUT_PUSH_NOW: Final = "pvoutput_push_now"
+ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"

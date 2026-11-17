@@ -26,7 +26,7 @@ Why: register writes behave differently across models and regional firmware, and
 
 ## Key metrics
 
-A selection of the 192 entities (some are disabled by default). Entity IDs assume the default device names. iHomeManager entities are tagged "(iHM)" in their names; the tag is not part of the entity ID.
+A selection of the 192 entities (some are disabled by default). Home Assistant shows each entity with its device name in front, e.g. *SH10RS Daily PV generation* or *iHM Battery SoC*. Entity IDs keep the `sungrow_ems_inverter_` / `sungrow_ems_ihomemanager_` prefixes whatever the devices are called.
 
 | Metric | Entity | Unit | Source |
 |---|---|---|---|
@@ -171,7 +171,7 @@ Saving changed options reloads the integration.
 
 ## Entities
 
-Two devices are created: **Sungrow EMS Inverter** and **Sungrow EMS iHomeManager**.
+Two devices are created: the inverter, named after its model as read over Modbus (for example **SH10RS**, or **Inverter** if the model code is unknown), and **iHM** for the iHomeManager. Renaming them in Home Assistant is fine; entity IDs do not change.
 Some rarely useful or unreliable sensors are disabled by default; enable them from the device page if you need them. Holding-register readbacks (settings) are diagnostic entities.
 Refer to table below for examples.
 

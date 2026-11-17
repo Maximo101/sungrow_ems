@@ -56,6 +56,7 @@ from .registers import (
 
 if TYPE_CHECKING:
     from .derived import DerivedEngine
+    from .pvoutput import PVOutputUploader
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -187,9 +188,11 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
             model_reg = REGISTERS_BY_KEY["mb_device_type_code"]
             code = self._raw.get("mb_device_type_code")
             model = model_reg.label(code) if code is not None else None
+            if model is not None and model.startswith("Unknown"):
+                model = None
             return DeviceInfo(
                 identifiers={self.device_identifier},
-                name=DEVICE_NAME_INVERTER,
+                name=model or DEVICE_NAME_INVERTER,
                 manufacturer=MANUFACTURER,
                 model=self._model_line(model or "Hybrid inverter"),
                 model_id=f"0x{code:04X}" if code is not None else None,
@@ -375,6 +378,7 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
         info = self.device_info
         registry.async_update_device(
             device.id,
+            name=info.get("name"),
             model=info.get("model"),
             model_id=info.get("model_id"),
             serial_number=info.get("serial_number"),
@@ -391,6 +395,8 @@ class SungrowEmsRuntimeData:
     ihm: SungrowEmsCoordinator | None
     hubs: list[SungrowModbusHub] = field(default_factory=list)
     derived: DerivedEngine | None = None
+    #: Optional PVOutput.org uploader (None unless enabled in the options).
+    pvoutput: PVOutputUploader | None = None
 
     @property
     def coordinators(self) -> list[SungrowEmsCoordinator]:

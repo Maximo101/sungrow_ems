@@ -50,13 +50,10 @@ async def test_setup_creates_all_entities_and_two_devices(
     assert all(e.unique_id.endswith("_ems") for e in entities)
 
     devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
-    assert {d.name for d in devices} == {
-        "Sungrow EMS Inverter",
-        "Sungrow EMS iHomeManager",
-    }
-    inverter_device = next(d for d in devices if d.name == "Sungrow EMS Inverter")
+    assert {d.name for d in devices} == {"SH10RS", "iHM"}
+    inverter_device = next(d for d in devices if d.name == "SH10RS")
     assert inverter_device.model == "SH10RS @ inverter.test"
-    ihm_device = next(d for d in devices if d.name == "Sungrow EMS iHomeManager")
+    ihm_device = next(d for d in devices if d.name == "iHM")
     assert ihm_device.model == "iHomeManager @ ihm.test"
     assert inverter_device.serial_number == SERIAL
     assert inverter_device.manufacturer == "Sungrow"
@@ -237,7 +234,7 @@ async def test_without_ihm_only_inverter_entities_exist(
     assert entry.state is ConfigEntryState.LOADED
     assert ihm.connects == 0
     devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
-    assert [d.name for d in devices] == ["Sungrow EMS Inverter"]
+    assert [d.name for d in devices] == ["SH10RS"]
 
 
 async def test_last_known_good_until_failure_threshold(
@@ -300,7 +297,7 @@ async def test_connection_sensor_is_quiet_until_the_device_drops(
     assert first.attributes["device_class"] == "connectivity"
     assert "last_error" not in first.attributes
     ihm_state = hass.states.get("binary_sensor.sungrow_ems_ihomemanager_connection")
-    assert ihm_state.name == "Connection (iHM)"
+    assert ihm_state.name == "iHM Connection"
 
     # Good polls with changing values: no new state, so nothing is logged.
     for power in (1000, 2000, 3000):
@@ -340,10 +337,10 @@ async def test_connection_sensor_goes_off_with_the_device(
     assert "last_error" not in hass.states.get(entity_id).attributes
 
 
-async def test_ihm_entities_are_tagged_and_keep_their_entity_ids(
+async def test_device_names_and_entity_ids(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
-    """Every iHomeManager entity name ends in " (iHM)"; no entity ID does."""
+    """Devices are "SH10RS" / "iHM"; entity IDs keep the sungrow_ems_ prefixes."""
     await _setup(hass, entry)
     device_registry = dr.async_get(hass)
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
@@ -352,16 +349,38 @@ async def test_ihm_entities_are_tagged_and_keep_their_entity_ids(
         by_device.setdefault(
             device_registry.async_get(entity.device_id).name, []
         ).append(entity)
-    ihm_entities = by_device["Sungrow EMS iHomeManager"]
-    assert len(ihm_entities) > 50
-    assert all(e.original_name.endswith(" (iHM)") for e in ihm_entities)
-    assert not any(
-        "ihm" in e.entity_id.split("ihomemanager_", 1)[1] for e in ihm_entities
+    assert len(by_device["iHM"]) > 50
+    assert all(
+        e.entity_id.split(".", 1)[1].startswith("sungrow_ems_ihomemanager_")
+        for e in by_device["iHM"]
     )
-    assert not any("iHM" in e.original_name for e in by_device["Sungrow EMS Inverter"])
+    assert all(
+        e.entity_id.split(".", 1)[1].startswith("sungrow_ems_inverter_")
+        for e in by_device["SH10RS"]
+    )
+    assert not any("iHM" in (e.original_name or "") for e in entities)
 
-    state = hass.states.get(f"{IHM}battery_soc")
-    assert state.name == "Battery SoC (iHM)"
-    assert hass.states.get(f"{INV}battery_soc").name == "Battery SoC"
+    assert hass.states.get(f"{IHM}battery_soc").name == "iHM Battery SoC"
+    assert hass.states.get(f"{INV}battery_soc").name == "SH10RS Battery SoC"
     assert hass.states.get("binary_sensor.sungrow_ems_ihomemanager_connection")
     assert hass.states.get(f"{IHM}grid_import_safe") is not None
+
+
+async def test_existing_entity_ids_are_kept(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """An entity registered under another ID keeps it after the device rename."""
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        make_unique_id(entry, "mb_battery_soc"),
+        suggested_object_id="my_custom_battery_soc",
+        config_entry=entry,
+    )
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    state = hass.states.get("sensor.my_custom_battery_soc")
+    assert state is not None
+    assert state.name == "SH10RS Battery SoC"
+    assert hass.states.get(f"{INV}battery_soc") is None
