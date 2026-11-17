@@ -1,6 +1,6 @@
 """Sensor descriptions for every register in registers.py.
 
-Reconciled against Hybrid Inverter Protocol V1.1.4 and iHM Protocol V1.0.2.
+Reconciled against Hybrid Inverter Protocol V1.1.17 and iHM Protocol V1.0.2.
 Keys are the register keys, so ``unique_id = f"{entry_id}_{key}_ems"``.
 
 Defaults for "enabled by default" mirror what was enabled in the original
@@ -50,6 +50,7 @@ from .registers import (
     active_bits,
     decode_bits,
     format_ihm_protocol_version,
+    format_inverter_protocol_version,
 )
 
 ValueFn = Callable[[Value, int | None], StateType]
@@ -102,6 +103,10 @@ def _version_fn(_value: Value, raw: int | None) -> StateType:
     return format_ihm_protocol_version(raw)
 
 
+def _inverter_version_fn(_value: Value, raw: int | None) -> StateType:
+    return format_inverter_protocol_version(raw)
+
+
 def _bitfield_attrs(key: str) -> AttrsFn:
     labels = FAULT_BITS.get(key, {})
 
@@ -141,6 +146,7 @@ class Kind(StrEnum):
     ENUM = "enum"
     HEX = "hex"
     VERSION = "version"
+    INVERTER_VERSION = "inverter_version"
     BITFIELD = "bitfield"
     POWER_FLOW = "power_flow"
     TEXT = "text"
@@ -213,6 +219,7 @@ _STATIC_PRESETS: Final[dict[Kind, dict[str, Any]]] = {
     ),
     Kind.COUNT: {"state_class": _MEASUREMENT, "suggested_display_precision": 0},
     Kind.VERSION: {"value_fn": _version_fn},
+    Kind.INVERTER_VERSION: {"value_fn": _inverter_version_fn},
     Kind.POWER_FLOW: {"attrs_fn": _power_flow_attrs},
     Kind.TEXT: {},
     Kind.PLAIN: {},
@@ -266,9 +273,12 @@ def _d(
 
 INVERTER_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
     # Identity
-    _d("mb_protocol_number", "Protocol number", "hex", enabled=False, diagnostic=True),
     _d(
-        "mb_protocol_version", "Protocol version", "hex", enabled=False, diagnostic=True
+        "mb_protocol_version",
+        "Protocol version",
+        "inverter_version",
+        enabled=False,
+        diagnostic=True,
     ),
     _d(
         "mb_arm_version",
@@ -472,7 +482,7 @@ INVERTER_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
     ),
     _d("mb_daily_battery_charge", "Daily battery charge", "energy"),
     _d("mb_total_battery_charge", "Total battery charge", "energy", enabled=False),
-    _d("mb_drm_state", "DRM state", "plain", enabled=False, diagnostic=True),
+    _d("mb_drm_state", "DRM state", "enum", enabled=False, diagnostic=True),
     _d("mb_daily_export_energy", "Daily export (inverter)", "energy", enabled=False),
     _d("mb_total_export_energy", "Total export (inverter)", "energy", enabled=False),
     # Fault and alarm bitfields
@@ -625,6 +635,27 @@ INVERTER_SETTING_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
         diagnostic=True,
     ),
     _d(
+        "mb_feed_in_limitation_ratio",
+        "Feed-in limitation ratio",
+        "percent",
+        enabled=False,
+        diagnostic=True,
+    ),
+    _d(
+        "mb_active_power_limitation",
+        "Active power limitation",
+        "enum",
+        enabled=False,
+        diagnostic=True,
+    ),
+    _d(
+        "mb_active_power_limit_ratio",
+        "Active power limit ratio",
+        "percent",
+        enabled=False,
+        diagnostic=True,
+    ),
+    _d(
         "mb_backup_reserve_soc",
         "Backup reserve SoC",
         "percent",
@@ -665,8 +696,8 @@ INVERTER_SETTING_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
 IHM_SENSORS: tuple[SungrowSensorEntityDescription, ...] = (
     _d(
         "ihm_device_type_code",
-        "Device type",
-        "hex",
+        "Model",
+        "enum",
         diagnostic=True,
         icon="mdi:information-outline",
     ),

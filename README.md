@@ -41,7 +41,7 @@ A selection of the 192 entities (some are disabled by default). Entity IDs assum
 | Battery state of charge | `sensor.sungrow_ems_inverter_battery_soc` | % | Inverter |
 | Battery status (Charging / Discharging / Idle) | `sensor.sungrow_ems_inverter_battery_status` | text | Calculated |
 | Battery usable energy | `sensor.sungrow_ems_inverter_battery_usable_energy` | kWh | Calculated |
-| Time until fully charged / discharged | `…inverter_time_until_fully_charged`, `…inverter_time_until_fully_discharged` | min | Calculated |
+| Time until fully charged / discharged | `…inverter_time_until_fully_charged`, `…inverter_time_until_fully_discharged` | text, e.g. `7h 27m` (minutes in the `minutes` attribute) | Calculated |
 | Battery power (charging / discharging split) | `…inverter_battery_charging_power`, `…inverter_battery_discharging_power` | W | Calculated |
 | Battery charge / discharge today | `…inverter_daily_battery_charge`, `…inverter_daily_battery_discharge` | kWh | Inverter |
 | Battery health, temperature, voltage | `…inverter_battery_health`, `…inverter_battery_temperature`, `…inverter_battery_voltage` | %, °C, V | Inverter |
@@ -71,7 +71,7 @@ A selection of the 192 entities (some are disabled by default). Entity IDs assum
 - **Fully local Modbus TCP.** Reads the inverter (via WiNet-S / LAN) and the iHomeManager directly. Nothing leaves your network.
 - **Two independent coordinators**, one per device, so a slow or offline iHM never stalls inverter data (and vice versa).
 - **Fast polling.** 10 s default for both devices (5 s minimum). The iHM's mandatory 1 s gap between requests is respected automatically.
-- **Efficient block reads.** 161 registers in 17 batched blocks. Live values are read every poll; settings are read once a minute and identity once an hour. If a device rejects part of a block, the hub splits it and remembers the working split.
+- **Efficient block reads.** 163 registers in 17 batched blocks. Live values are read every poll; inverter settings every 5 minutes (as the protocol asks for read-write registers over WiNet-S), iHomeManager settings once a minute, and identity once an hour. If a device rejects part of a block, the hub splits it and remembers the working split.
 - **Resilient.** Last-known-good values are kept through short dropouts. Entities go unavailable only after a configurable number of failed polls (default 6). Reconnects use exponential backoff, and sockets are always released on unload, reload and failed setup.
 - **Sentinel filtering.** Sungrow's "not available" values (`0xFFFF`, `0x7FFF`, …) and out-of-range readings are dropped instead of appearing as spikes.
 - **Native replacements for common YAML templates:** spike-filtered grid totals, midnight-reset daily meters, daily consumption, self-sufficiency, PV split percentages (always sum to 100), battery status, usable energy and time-to-full / time-to-empty estimates, split import/export and charge/discharge power, and a decoded System Status sensor.
@@ -88,9 +88,9 @@ A selection of the 192 entities (some are disabled by default). Entity IDs assum
 | Gateway | iHomeManager, firmware SV930.001.00.P014 | Modbus TCP 503, unit ID 247 |
 | EV charger | Sungrow AC22E-01 | via iHomeManager |
 
-Tested on Home Assistant 2026.10.4. The test suite (87 tests) runs against a simulated inverter and iHomeManager.
+Tested on Home Assistant 2026.10.4. The test suite (131 tests) runs against a simulated inverter and iHomeManager.
 
-Other SH-series hybrids that implement the *Communication Protocol of Residential Hybrid Inverter* (V1.1.x) should work, since the register map follows the protocol, but they haven't been tested. Three-phase (RT) models will show some phase B/C entities as unavailable for now. **Reports from other models are very welcome.**
+Other SH-series hybrids that implement the *Communication Protocol of Residential and Small Industrial Hybrid Inverter* (V1.1.x) should work, since the register map follows the protocol, but they haven't been tested. Three-phase (RT) models will show some phase B/C entities as unavailable for now. **Reports from other models are very welcome.**
 
 The iHomeManager is optional. Without it you still get every inverter sensor, but grid-meter totals, the EV charger and the iHM-based derived sensors won't be available.
 
@@ -181,7 +181,7 @@ Nothing here uses a fixed capacity; every figure comes from live readings.
 
 - **Battery status** follows the inverter's own power-flow flags (register 13001), with the sign of the battery power as the fallback.
 - **Battery usable energy** is the energy you can draw before discharging stops. The SoC the inverter reports runs from 0 % at *Min SoC* to 100 % at *Max SoC*, so the capacity behind it is `rated capacity × (Max SoC − Min SoC)`. While the grid is up, the *Backup reserve SoC* is held back and is not counted; in off-grid (backup) mode it is. The attributes show the parts: `usable_capacity_kwh`, `stored_energy_kwh` (everything above Min SoC), `reserved_energy_kwh`, `energy_to_full_kwh` and `discharge_floor`.
-- **Time until fully charged / fully discharged** divide the energy still to go by the battery power averaged over two minutes. "Fully discharged" means the point where discharging stops: the backup reserve on grid, Min SoC off grid. Each shows *Unknown* while the battery is going the other way or is idle. Charging slows near 100 %, so the last part of a charge takes longer than the estimate.
+- **Time until fully charged / fully discharged** divide the energy still to go by the battery power averaged over two minutes. "Fully discharged" means the point where discharging stops: the backup reserve on grid, Min SoC off grid. They are shown as hours and minutes (for example *7h 27m*); the `minutes` attribute has the number for automations and `finishes_at` the estimated clock time. Each shows *Unknown* while the battery is going the other way or is idle. Charging slows near 100 %, so the last part of a charge takes longer than the estimate.
 
 The SoC scaling between Min SoC and Max SoC is how Sungrow hybrids are observed to behave; it is not stated in the protocol document. If your system behaves differently, please open an issue.
 
@@ -211,7 +211,7 @@ Because the iHM only accepts one connection per port, two pollers on the same po
 
 - **Inverter total battery charge (13041)** returns an invalid high word on the SH10RS and is rejected; use *Total battery charge cumulative* (integrated from battery power) instead.
 - **Inverter meter registers** (13029, 13036–13038, 13045–13047) read 0 when the iHM does the metering, so they're disabled by default. Use the iHM meter sensors.
-- **Settings sensors update once a minute** (EMS mode, EV charger mode, limits), not every poll.
+- **Settings sensors update slowly**, not every poll: inverter settings (Min/Max SoC, backup reserve, limits) every 5 minutes, iHomeManager settings (EMS mode, EV charger mode) once a minute.
 - **WiNet-S caching (suspected):** the inverter sometimes repeats identical values for about 2 minutes while polls still succeed. The poll status sensors expose `seconds_since_value_change` to help confirm this.
 - **EV charger power (iHM 8594)** isn't in the current iHM protocol document and is marked unverified.
 - **iHM 8049 / 8050** (charger enable / grid draw) read "Disable" in every charger mode tested; their meaning on current firmware is still unclear.
@@ -251,7 +251,7 @@ Huge thanks for the original integration: its entity keys (`mb_*`, `ihm_*`) and 
 Also thanks to:
 
 - **[SunGather](https://github.com/bohdan-s/SunGather)** by [@bohdan-s](https://github.com/bohdan-s), whose community register map was cross-checked for registers not covered by Sungrow's documents (those are flagged as unverified in `registers.py`).
-- **Sungrow**, for publishing the *Communication Protocol of Residential Hybrid Inverter* (V1.1.4) and the *iHM Communication Protocol* (V1.0.2), which every register here is cross-referenced against.
+- **Sungrow**, for publishing the *Communication Protocol of Residential and Small Industrial Hybrid Inverter* (V1.1.17) and the *iHM Communication Protocol* (V1.0.2), which every register here is cross-referenced against.
 - The **[pymodbus](https://github.com/pymodbus-dev/pymodbus)** project.
 
 ## Disclaimer

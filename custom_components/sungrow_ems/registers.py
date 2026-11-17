@@ -8,8 +8,9 @@ Pure Python. No Home Assistant imports, no I/O. Everything here can be unit
 tested offline.
 
 Sources (cross-referenced for every register below):
-  * "Communication Protocol of Residential Hybrid Inverter" V1.1.4
-    (SH10RS = device type code 0xD1B). Referred to as [INV].
+  * "Communication Protocol of Residential and Small Industrial Hybrid
+    Inverter" V1.1.17 (2026-09-30), SH8.0-10RS series, SH10RS = device type
+    code 0xD1B. Referred to as [INV]. (Originally built against V1.1.4.)
   * "iHM Communication Protocol" V1.0.2 (2026-01-21). Referred to as [IHM].
   * Upstream fork (Cyber40014 sungrow-solarcloud-haos-integration) for the
     entity keys already in use, and SunGather registers-sungrow.yaml for
@@ -207,7 +208,7 @@ def contiguous_runs(registers: Iterable[Register]) -> list[tuple[int, int]]:
 # Enumerations and bit maps (from the PDFs)
 # ---------------------------------------------------------------------------
 
-#: [INV] Appendix 4.6, hybrid models only.
+#: [INV] V1.1.17 Appendix 1, Table 10 (Adaptive Inverter Models).
 DEVICE_TYPE_CODES: Final[Mapping[int, str]] = MappingProxyType(
     {
         0xD17: "SH3.0RS",
@@ -233,26 +234,56 @@ DEVICE_TYPE_CODES: Final[Mapping[int, str]] = MappingProxyType(
         0xE09: "SH6.0RT-V122",
         0xE0A: "SH8.0RT-V122",
         0xE0B: "SH10RT-V122",
-        0xE20: "SH5T-V11",
-        0xE21: "SH6T-V11",
-        0xE22: "SH8T-V11",
-        0xE23: "SH10T-V11",
-        0xE24: "SH12T-V11",
-        0xE25: "SH15T-V11",
-        0xE26: "SH20T-V11",
-        0xE28: "SH25T-V11",
+        0xE20: "SH5T",
+        0xE21: "SH6T",
+        0xE22: "SH8T",
+        0xE23: "SH10T",
+        0xE24: "SH12T",
+        0xE25: "SH15T",
+        0xE26: "SH20T",
+        0xE28: "SH25T",
+        0xD27: "MG5RL",
+        0xD28: "MG6RL",
+        0xD31: "MG7.5RL",
+        0xD29: "MG8RL",
+        0xD2A: "MG10RL",
+        0xD2F: "MG12RL",
+        0xD41: "SH3RL",
+        0xD42: "SH3.6RL",
+        0xD43: "SH4RL",
+        0xD2B: "SH5RL",
+        0xD2C: "SH6RL",
+        0xD2D: "SH8RL",
+        0xD2E: "SH10RL",
+        0xE51: "SH50CX",
+        0xE52: "SH80CX",
+        0xE39: "SH100CX",
+        0xE3A: "SH110CX",
+        0xE3D: "SH125CX",
+        0xE53: "MG10TL",
+        0xE54: "MG12TL",
+        0xE55: "MG15TL",
+        0xE56: "MG20TL",
+        0xE57: "MG25TL",
     }
 )
 
-#: [IHM] Table 3 item 1.
+#: [IHM] Table 3 item 1: register 8000 always reads 0x072A on an
+#: iHomeManager. It identifies the device model, like the inverter's 5000.
 IHM_DEVICE_TYPE_CODE: Final = 0x072A
+IHM_DEVICE_TYPES: Final[Mapping[int, str]] = MappingProxyType(
+    {IHM_DEVICE_TYPE_CODE: "iHomeManager"}
+)
 
-#: [INV] Appendix 4.1. Both the new (0x1200) and legacy (0x0010) codes appear.
+#: [INV] V1.1.17 Appendix 2. Both the new (0x1200) and legacy (0x0010) codes
+#: appear. 0x0014, 0x0080 and 0x2500 were added after V1.1.4.
 RUNNING_STATES: Final[Mapping[int, str]] = MappingProxyType(
     {
         0x0000: "Running",
         0x0040: "Running",
+        0x0014: "Microgrid operation",
         0x0041: "Off-grid charge",
+        0x0080: "Derating running",
         0x0200: "Update failed",
         0x0400: "Running in maintain mode",
         0x0800: "Running in forced mode",
@@ -272,6 +303,7 @@ RUNNING_STATES: Final[Mapping[int, str]] = MappingProxyType(
         0x1800: "Intelligent station building",
         0x1900: "Safe mode",
         0x2000: "Open loop",
+        0x2500: "Communication fault",
         0x2501: "Restarting",
         0x4000: "Running in external EMS mode",
         0x4001: "Emergency charging",
@@ -354,11 +386,17 @@ IHM_ON_OFF: Final[Mapping[int, str]] = MappingProxyType(
     {1: "On", 0: "Off", 0xAA: "On", 0x55: "Off"}
 )
 
-#: 13030 is "Reserved" in [INV] V1.1.4. Older firmware reported 0xAA / 0x55
+#: 13030 is "Reserved" in [INV] (V1.1.4 to V1.1.17). Older firmware reported 0xAA / 0x55
 #: here (the SunGather mapping); current firmware returns 0, shown as "Not
 #: reported". Use the Off-grid (backup) mode binary sensor (13000) instead.
 GRID_STATES: Final[Mapping[int, str]] = MappingProxyType(
     {0xAA: "Off-grid", 0x55: "On-grid", 0: "Not reported"}
+)
+
+#: [INV] V1.1.17 Table 3 #118: register 13043, 1-9 = DRM0-DRM8, anything else
+#: is invalid (shown as "Unknown (n)").
+DRM_STATES: Final[Mapping[int, str]] = MappingProxyType(
+    {code: f"DRM{code - 1}" for code in range(1, 10)}
 )
 
 
@@ -655,6 +693,18 @@ def active_bits(value: int | None, labels: Mapping[int, str]) -> list[str]:
     return out
 
 
+def format_inverter_protocol_version(value: int | None) -> str | None:
+    """Format inverter register 4952-4953 as 'V1.1.7'.
+
+    [INV] V1.1.17 Table 3 #2: 0x01010700 represents V1.1.7 (after the usual
+    low-word-first U32 decode).
+    """
+    if value is None:
+        return None
+    v = int(value)
+    return f"V{(v >> 24) & 0xFF}.{(v >> 16) & 0xFF}.{(v >> 8) & 0xFF}"
+
+
 def format_ihm_protocol_version(value: int | None) -> str | None:
     """Format iHM register 8003-8004 as 'V1.0.2'.
 
@@ -710,8 +760,8 @@ _LIFETIME = {"valid_min": 0.0, "valid_max": 1_000_000.0}
 # existed there, so side-by-side comparison is one-to-one.
 
 INVERTER_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
-    # --- Identity [INV] 3.1 #1-9 -------------------------------------------
-    _inv("mb_protocol_number", 4950, U32),
+    # --- Identity [INV] Table 3 #2-9 ----------------------------------------
+    # 4950-4951 (Protocol No.) has been Reserved since V1.1.7: not read.
     _inv("mb_protocol_version", 4952, U32),
     _inv("mb_arm_version", 4954, UTF8, length=15),
     _inv("mb_dsp_version", 4969, UTF8, length=15),
@@ -744,7 +794,8 @@ INVERTER_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
     _inv("mb_reactive_power", 5033, S32, unit="var"),
     _inv("mb_power_factor", 5035, S16, scale=0.001, valid_min=-1.0, valid_max=1.0),
     _inv("mb_grid_frequency_low_res", 5036, U16, scale=0.1, unit="Hz", **_FREQ),
-    # --- MPPT4, SH8.0RS/SH10RS only [INV] V1.1.4 #29-30 ---------------------
+    # --- MPPT4, SH8.0-10RS (4 MPPTs) [INV] Table 3 #29-30 -------------------
+    # MPPT 5-10 (5117-5133) are SH50~125CX only and deliberately not read.
     _inv("mb_mppt4_voltage", 5115, U16, scale=0.1, unit="V"),
     _inv("mb_mppt4_current", 5116, U16, scale=0.1, unit="A"),
     # --- Wide-range battery power, high-precision frequency #31-32 ----------
@@ -764,8 +815,8 @@ INVERTER_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
         5601,
         S32,
         unit="W",
-        verified=False,
-        note="Not in V1.1.4; in SunGather and the fork. Next to the documented phase registers.",
+        note="[INV] V1.1.7+: > 0 import, < 0 export. Only valid when a smart meter "
+        "is wired directly to the inverter (not via the iHM).",
     ),
     _inv("mb_meter_phase_a_active_power", 5603, S32, unit="W"),
     _inv("mb_meter_phase_b_active_power", 5605, S32, unit="W"),
@@ -823,16 +874,16 @@ INVERTER_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
         S16,
         scale=0.1,
         unit="A",
-        extra_invalid=frozenset({0xFFFF}),
-        note="Spec U16; decoded S16 because some firmware sends two's complement. Cross-check vs 5631.",
+        note="Table says U16; V1.1.17 remark: S16 on SH3.0-6.0RS and SH8.0-10RS. "
+        "Cross-check only, 5631 is primary.",
     ),
     _inv(
         "mb_battery_power_13022",
         13022,
         S16,
         unit="W",
-        extra_invalid=frozenset({0xFFFF}),
-        note="Spec U16; SunGather S16. Magnitude < 32768 W on SH-RS. Cross-check vs 5214.",
+        note="Table says U16; V1.1.17 remark: S16 on SH3.0-6.0RS and SH8.0-10RS. "
+        "Cross-check only, 5214 is primary.",
     ),
     _inv("mb_battery_soc", 13023, U16, scale=0.1, unit="%", **_PCT),
     _inv("mb_battery_soh", 13024, U16, scale=0.1, unit="%", **_PCT),
@@ -854,7 +905,7 @@ INVERTER_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
         U16,
         options=GRID_STATES,
         verified=False,
-        note="Reserved in V1.1.4 (reads 0); SunGather maps 0xAA off-grid / 0x55 on-grid.",
+        note="Reserved in V1.1.4-V1.1.17 (reads 0); SunGather maps 0xAA off-grid / 0x55 on-grid.",
     ),
     _inv("mb_phase_a_current", 13031, S16, scale=0.1, unit="A"),
     _inv("mb_phase_b_current", 13032, S16, scale=0.1, unit="A"),
@@ -882,7 +933,7 @@ INVERTER_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
         note="SH10RS (ARM_SUNSTONE-H) returns a high word of 0xFFFF here; true total is "
         "~17 MWh per iSolarCloud. Rejected by the lifetime range check.",
     ),
-    _inv("mb_drm_state", 13043, U16),
+    _inv("mb_drm_state", 13043, U16, options=DRM_STATES),
     _inv("mb_daily_export_energy", 13045, U16, scale=0.1, unit="kWh"),
     _inv("mb_total_export_energy", 13046, U32, scale=0.1, unit="kWh", **_LIFETIME),
     # --- Fault and alarm bitfields [INV] #109-123 ----------------------------
@@ -912,8 +963,7 @@ INVERTER_HOLDING_REGISTERS: Final[tuple[Register, ...]] = (
         13052,
         U16,
         unit="W",
-        verified=False,
-        note="Unit is 1 W on SH3-6RS and % of BDC rating on RT; SH10RS unconfirmed.",
+        note="[INV] V1.1.17: 1 W, 0-100 % of BDC rated power (5628).",
     ),
     _inv_hold(
         "mb_max_soc", 13058, U16, scale=0.1, unit="%", valid_min=50.0, valid_max=100.0
@@ -926,6 +976,27 @@ INVERTER_HOLDING_REGISTERS: Final[tuple[Register, ...]] = (
     _inv_hold("mb_ems_heartbeat", 13080, U16, unit="s"),
     _inv_hold("mb_meter_comm_detection", 13086, U16, options=ENABLE_AA_55),
     _inv_hold("mb_export_power_limitation", 13087, U16, options=ENABLE_AA_55),
+    # [INV] V1.1.7+. Supported on SH8.0-10RS (exclusions: MG5-12RL, SH3-10RL,
+    # SH50~125CX). 13088 takes precedence over 13074 when both are set.
+    _inv_hold(
+        "mb_feed_in_limitation_ratio",
+        13088,
+        U16,
+        scale=0.1,
+        unit="%",
+        **_PCT,
+        note="Takes precedence over 13074 when both are set.",
+    ),
+    _inv_hold("mb_active_power_limitation", 13089, U16, options=ENABLE_AA_55),
+    _inv_hold(
+        "mb_active_power_limit_ratio",
+        13090,
+        U16,
+        scale=0.1,
+        unit="%",
+        **_PCT,
+        note="Limit at the inverter AC port, % of rated power.",
+    ),
     _inv_hold("mb_backup_reserve_soc", 13100, U16, unit="%", **_PCT),
     _inv_hold("mb_feed_in_limitation_wide", 31222, U16, scale=0.01, unit="kW"),
     _inv_hold("mb_charge_cutoff_voltage", 33042, U16, scale=0.1, unit="V"),
@@ -936,7 +1007,7 @@ INVERTER_HOLDING_REGISTERS: Final[tuple[Register, ...]] = (
 
 IHM_INPUT_REGISTERS: Final[tuple[Register, ...]] = (
     # --- Identity [IHM] Table 3 #1-5, #20 -----------------------------------
-    _ihm("ihm_device_type_code", 8000, U16),
+    _ihm("ihm_device_type_code", 8000, U16, options=IHM_DEVICE_TYPES),
     _ihm("ihm_protocol_number", 8001, UTF8, length=2),
     _ihm("ihm_protocol_version", 8003, U32),
     _ihm("ihm_connected_devices", 8005, U16),
@@ -1058,11 +1129,15 @@ REGISTERS_BY_KEY: Final[Mapping[str, Register]] = MappingProxyType(
 # gap-free runs and remembers that split.
 
 _STATIC = 3600  # identity / firmware: hourly
-_SLOW = 60  # settings readback (holding registers): once a minute
+_SLOW = 60  # iHM settings readback (holding registers): once a minute
+#: Inverter settings readback. [INV] 1.2 rule 6: RW registers must not be read
+#: frequently through WiNet-S/WiNet-S2/Logger. Values persist between reads
+#: and a failed read is retried on the next poll, so a long interval is safe.
+_INV_SETTINGS = 300
 
 _BLOCK_SPECS: Final[tuple[tuple[str, Device, Table, int, int, int | None], ...]] = (
     # Inverter, FC04
-    ("inv_identity", _I, _IN, 4950, 5002, _STATIC),
+    ("inv_identity", _I, _IN, 4952, 5002, _STATIC),
     ("inv_ac_dc", _I, _IN, 5003, 5036, None),
     ("inv_mppt4", _I, _IN, 5115, 5116, None),
     ("inv_battery_power", _I, _IN, 5214, 5242, None),
@@ -1071,10 +1146,10 @@ _BLOCK_SPECS: Final[tuple[tuple[str, Device, Table, int, int, int | None], ...]]
     ("inv_system", _I, _IN, 13000, 13047, None),
     ("inv_faults", _I, _IN, 13050, 13079, None),
     # Inverter, FC03 (read-only diagnostics)
-    ("inv_hold_ems", _I, _HO, 13050, 13100, _SLOW),
-    ("inv_hold_feed_in_wide", _I, _HO, 31222, 31222, _SLOW),
-    ("inv_hold_battery_limits", _I, _HO, 33042, 33048, _SLOW),
-    ("inv_hold_power_wide", _I, _HO, 33148, 33148, _SLOW),
+    ("inv_hold_ems", _I, _HO, 13050, 13100, _INV_SETTINGS),
+    ("inv_hold_feed_in_wide", _I, _HO, 31222, 31222, _INV_SETTINGS),
+    ("inv_hold_battery_limits", _I, _HO, 33042, 33048, _INV_SETTINGS),
+    ("inv_hold_power_wide", _I, _HO, 33148, 33148, _INV_SETTINGS),
     # iHM, FC04
     ("ihm_identity", _H, _IN, 8000, 8006, _STATIC),
     ("ihm_software", _H, _IN, 8318, 8332, _STATIC),

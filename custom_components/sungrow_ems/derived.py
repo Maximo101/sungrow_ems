@@ -66,7 +66,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import logging
 import time
 from typing import Any, Literal
@@ -79,7 +79,7 @@ from homeassistant.components.sensor import (
     SensorExtraStoredData,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfTime
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
@@ -446,6 +446,14 @@ def battery_energy(
         floor=FLOOR_BACKUP_RESERVE if reserve > 0 else FLOOR_MIN_SOC,
         limits_known=limits_known,
     )
+
+
+def format_hours_minutes(minutes: int | None) -> str | None:
+    """675 -> "11h 15m", 6 -> "0h 6m". None stays None (state unknown)."""
+    if minutes is None:
+        return None
+    hours, rest = divmod(max(int(minutes), 0), 60)
+    return f"{hours}h {rest}m"
 
 
 def _minutes(energy_kwh: float, power_w: float | None) -> int | None:
@@ -1109,15 +1117,13 @@ DERIVED_SENSORS: tuple[SungrowDerivedSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=list(BATTERY_STATES),
     ),
+    # Shown as "7h 27m" (text). The number of minutes and the estimated
+    # finish time are attributes, for automations and templates.
     SungrowDerivedSensorEntityDescription(
         key=BATTERY_TIME_TO_FULL,
         name="Time until fully charged",
         device=Device.INVERTER,
         kind="battery",
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        suggested_display_precision=0,
         icon="mdi:battery-clock",
         available_keys=(BATTERY_USABLE_ENERGY, BATTERY_STATUS),
     ),
@@ -1126,10 +1132,6 @@ DERIVED_SENSORS: tuple[SungrowDerivedSensorEntityDescription, ...] = (
         name="Time until fully discharged",
         device=Device.INVERTER,
         kind="battery",
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        suggested_display_precision=0,
         icon="mdi:battery-clock-outline",
         available_keys=(BATTERY_USABLE_ENERGY, BATTERY_STATUS),
     ),
@@ -1145,7 +1147,9 @@ DERIVED_SENSORS: tuple[SungrowDerivedSensorEntityDescription, ...] = (
 #: Entity keys from earlier versions. Their registry entries are removed on
 #: setup. ``battery_stored_energy`` (SoC x capacity) became Battery usable
 #: energy in 0.1.6, which is a different quantity, so it starts a new entity.
-REMOVED_KEYS: tuple[str, ...] = ("battery_stored_energy",)
+#: ``mb_protocol_number`` (4950-4951) is Reserved since protocol V1.1.7 and is
+#: no longer read (0.1.9).
+REMOVED_KEYS: tuple[str, ...] = ("battery_stored_energy", "mb_protocol_number")
 
 # ---------------------------------------------------------------------------
 # Entities
@@ -1236,9 +1240,32 @@ class SungrowBatterySensor(SungrowDerivedSensor):
         return self.entity_description.icon
 
     @property
+    def native_value(self) -> Any:
+        value = super().native_value
+        if self.entity_description.key in _BATTERY_TIME_KEYS:
+            return format_hours_minutes(value)
+        return value
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         details = self._engine.values.get("battery_details") or {}
-        return details.get(self.entity_description.key)
+        attrs = details.get(self.entity_description.key)
+        key = self.entity_description.key
+        if key not in _BATTERY_TIME_KEYS:
+            return attrs
+        minutes = self._engine.values.get(key)
+        return {
+            **(attrs or {}),
+            "minutes": minutes,
+            "finishes_at": (dt_util.now() + timedelta(minutes=minutes))
+            .replace(second=0, microsecond=0)
+            .isoformat()
+            if minutes is not None
+            else None,
+        }
+
+
+_BATTERY_TIME_KEYS = frozenset({BATTERY_TIME_TO_FULL, BATTERY_TIME_TO_EMPTY})
 
 
 class SungrowSafeTotalSensor(SungrowDerivedSensor, RestoreSensor):
