@@ -67,6 +67,9 @@ async def test_states_are_decoded(hass: HomeAssistant, entry: MockConfigEntry) -
     assert hass.states.get(f"{INV}battery_soc").state == "65.5"
     assert hass.states.get(f"{INV}pv_dc_power").state == "4200"
     assert hass.states.get(f"{IHM}grid_import_energy").state == "12345.6"
+    model = hass.states.get(f"{IHM}model")  # register 8000, fixed 0x072A
+    assert model.state == "iHomeManager"
+    assert model.attributes["code_hex"] == "0x072A"
     assert (
         hass.states.get("binary_sensor.sungrow_ems_inverter_inverter_fault").state
         == STATE_OFF
@@ -110,7 +113,10 @@ async def test_battery_sensors(
     assert usable.state == "21.71"
     assert usable.attributes["usable_capacity_kwh"] == 36.48
     assert usable.attributes["discharge_floor"] == "backup_reserve"
-    assert hass.states.get(f"{INV}time_until_fully_charged").state == "252"
+    to_full = hass.states.get(f"{INV}time_until_fully_charged")
+    assert to_full.state == "4h 12m"  # 252 minutes
+    assert to_full.attributes["minutes"] == 252
+    assert to_full.attributes["finishes_at"] is not None
     # Not discharging: the estimate is unknown, not unavailable.
     assert hass.states.get(f"{INV}time_until_fully_discharged").state == STATE_UNKNOWN
 
@@ -119,7 +125,7 @@ async def test_battery_sensors(
     await _poll(hass)
     assert hass.states.get(f"{INV}battery_status").state == "Discharging"
     assert hass.states.get(f"{INV}time_until_fully_charged").state == STATE_UNKNOWN
-    assert hass.states.get(f"{INV}time_until_fully_discharged").state == "651"
+    assert hass.states.get(f"{INV}time_until_fully_discharged").state == "10h 51m"
 
     # Off grid, the backup reserve becomes usable.
     inverter.set("mb_running_state", 0x1000)
@@ -158,7 +164,8 @@ async def test_no_write_function_is_ever_called(
     allowed = {"read_input_registers", "read_holding_registers"}
     assert inverter.functions() <= allowed
     assert ihm.functions() <= allowed
-    assert hass.services.async_services().get(DOMAIN) is None
+    # Only the PVOutput upload action, which never touches the devices.
+    assert set(hass.services.async_services().get(DOMAIN, {})) <= {"pvoutput_push_now"}
 
 
 async def test_ihm_settings_are_not_read_every_poll(
@@ -293,7 +300,7 @@ async def test_connection_sensor_is_quiet_until_the_device_drops(
     assert first.attributes["device_class"] == "connectivity"
     assert "last_error" not in first.attributes
     ihm_state = hass.states.get("binary_sensor.sungrow_ems_ihomemanager_connection")
-    assert ihm_state.name == "Sungrow EMS iHomeManager Connection (iHM)"
+    assert ihm_state.name == "Connection (iHM)"
 
     # Good polls with changing values: no new state, so nothing is logged.
     for power in (1000, 2000, 3000):
@@ -354,9 +361,7 @@ async def test_ihm_entities_are_tagged_and_keep_their_entity_ids(
     assert not any("iHM" in e.original_name for e in by_device["Sungrow EMS Inverter"])
 
     state = hass.states.get(f"{IHM}battery_soc")
-    assert state.name == "Sungrow EMS iHomeManager Battery SoC (iHM)"
-    assert (
-        hass.states.get(f"{INV}battery_soc").name == "Sungrow EMS Inverter Battery SoC"
-    )
+    assert state.name == "Battery SoC (iHM)"
+    assert hass.states.get(f"{INV}battery_soc").name == "Battery SoC"
     assert hass.states.get("binary_sensor.sungrow_ems_ihomemanager_connection")
     assert hass.states.get(f"{IHM}grid_import_safe") is not None

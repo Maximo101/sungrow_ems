@@ -6,7 +6,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import IHM_NAME_SUFFIX, UNIQUE_ID_SUFFIX
+from .const import (
+    DEVICE_NAME_IHM,
+    DEVICE_NAME_INVERTER,
+    IHM_NAME_SUFFIX,
+    UNIQUE_ID_SUFFIX,
+)
 from .coordinator import SungrowEmsCoordinator, SungrowEmsData
 from .registers import Device
 
@@ -24,24 +29,33 @@ def display_name(device: Device, name: str) -> str:
 class SungrowNamedEntity(Entity):
     """Naming shared by every entity of this integration.
 
-    The shown name carries the " (iHM)" tag for iHomeManager entities. The
-    entity ID is still built from the plain name, so it stays
-    ``sensor.sungrow_ems_ihomemanager_battery_soc`` (the device name already
-    says which device it is) and IDs are the same as in earlier versions.
+    The shown name is the entity's own name only ("Battery SoC"), not
+    prefixed with the device name; iHomeManager entities carry the " (iHM)"
+    tag ("Battery SoC (iHM)"). ``has_entity_name`` is therefore off.
+
+    The entity ID is still built as "<device name> <plain name>", so a new
+    install gets ``sensor.sungrow_ems_inverter_battery_soc`` /
+    ``sensor.sungrow_ems_ihomemanager_battery_soc`` exactly as before.
+    Existing installs keep the entity IDs stored in the entity registry
+    (looked up by unique ID), so history and statistics are untouched.
     """
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _plain_name: str | None = None
+    _device_name: str | None = None
 
     def _set_names(self, device: Device, name: str) -> None:
         self._plain_name = name
+        self._device_name = (
+            DEVICE_NAME_IHM if device is Device.IHM else DEVICE_NAME_INVERTER
+        )
         self._attr_name = display_name(device, name)
 
     @property
     def suggested_object_id(self) -> str | None:
-        """Entity ID base: the name without the device tag."""
-        if self._plain_name is not None:
-            return self._plain_name
+        """Entity ID base: device name + plain name, without the (iHM) tag."""
+        if self._plain_name is not None and self._device_name is not None:
+            return f"{self._device_name} {self._plain_name}"
         return super().suggested_object_id
 
 
