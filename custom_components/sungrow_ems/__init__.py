@@ -1,19 +1,35 @@
 """Sungrow EMS: local Modbus TCP telemetry for Sungrow hybrid inverters and the iHomeManager.
 
-Read-only by design. The integration polls input and holding registers
+Read-only. The integration polls input and holding registers
 (FC04/FC03) and never writes to the inverter, battery, iHomeManager or EV
-charger. Control entities and services are permanently out of scope.
+charger. There are no device-side entities or services that change anything.
+
+Optional: an uploader that sends the values already polled to PVOutput.org
+(off by default; see pvoutput.py), with a ``pvoutput_push_now`` action to
+send one upload on demand.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Any
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import Event, HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.core import (
+    Event,
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers.typing import ConfigType
+import voluptuous as vol
 
 from .const import (
+    ATTR_CONFIG_ENTRY_ID,
     CONF_FAILURE_THRESHOLD,
     CONF_IHM_DEVICE_ID,
     CONF_IHM_ENABLED,
@@ -25,6 +41,7 @@ from .const import (
     CONF_INVERTER_HOST,
     CONF_INVERTER_PORT,
     CONF_INVERTER_SCAN_INTERVAL,
+    CONF_PVOUTPUT_ENABLED,
     CONF_RETRIES,
     CONF_TIMEOUT,
     DEFAULT_FAILURE_THRESHOLD,
@@ -43,6 +60,7 @@ from .const import (
     PLAN_RESET_SECONDS,
     PLATFORMS,
     RECONNECT_BACKOFF_MAX,
+    SERVICE_PVOUTPUT_PUSH_NOW,
     UNIQUE_ID_SUFFIX,
     UNSUPPORTED_RETRY_SECONDS,
 )
@@ -54,9 +72,14 @@ from .coordinator import (
 )
 from .derived import DerivedEngine
 from .modbus import SungrowModbusHub
+from .pvoutput import PVOutputSettings, PVOutputUploader
 from .registers import Device
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+_PUSH_NOW_SCHEMA = vol.Schema({vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string})
 
 #: Entities disabled by default from 0.1.1 after live validation (they read 0
 #: or garbage on an SH10RS behind an iHM). The 1.1 -> 1.2 migration disables
@@ -68,6 +91,16 @@ _DISABLED_IN_1_2 = (
     "mb_total_export_energy",
     "mb_self_consumption_today",
     "mb_total_battery_charge",
+)
+
+#: Disabled by default from 0.1.10 when an iHM is configured: they need a meter
+#: wired to the inverter (protocol note 1). Only the ones that used to be on
+#: by default are touched; the rest of METER_DEPENDENT_KEYS was already off,
+#: so if they are on now the user turned them on. Re-enabling is respected.
+_DISABLED_IN_1_3_WITH_IHM = (
+    "mb_total_export_from_pv",
+    "mb_daily_direct_consumption",
+    "mb_total_direct_consumption",
 )
 
 
@@ -100,6 +133,50 @@ async def _async_close_hubs(hubs: list[SungrowModbusHub]) -> None:
             await hub.async_close()
         except Exception:
             _LOGGER.debug("Error closing %s", hub.name, exc_info=True)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the integration's actions (once, not per entry)."""
+
+    async def _async_push_now(call: ServiceCall) -> ServiceResponse:
+        wanted: str | None = call.data.get(ATTR_CONFIG_ENTRY_ID)
+        entries: list[SungrowEmsConfigEntry] = [
+            entry
+            for entry in hass.config_entries.async_entries(DOMAIN)
+            if entry.state is ConfigEntryState.LOADED
+            and (wanted is None or entry.entry_id == wanted)
+            and entry.runtime_data.pvoutput is not None
+        ]
+        if not entries:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="pvoutput_not_enabled",
+            )
+        results: dict[str, Any] = {}
+        failures: list[str] = []
+        for entry in entries:
+            uploader = entry.runtime_data.pvoutput
+            assert uploader is not None
+            result = await uploader.async_upload(manual=True)
+            results[entry.entry_id] = result.as_dict()
+            if not result.ok:
+                failures.append(f"{entry.title}: {result.message}")
+        if failures and not call.return_response:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="pvoutput_push_failed",
+                translation_placeholders={"error": "; ".join(failures)},
+            )
+        return {"results": results} if call.return_response else None
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PVOUTPUT_PUSH_NOW,
+        _async_push_now,
+        schema=_PUSH_NOW_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: SungrowEmsConfigEntry) -> bool:
@@ -190,6 +267,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: SungrowEmsConfigEntry) -
     entry.runtime_data = runtime
     entry.async_on_unload(runtime.derived.async_start())
 
+    if get_option(entry, CONF_PVOUTPUT_ENABLED, False):
+        # Optional cloud upload. It only reads the snapshots above; a PVOutput
+        # problem is logged and never affects the coordinators or entities.
+        runtime.pvoutput = PVOutputUploader(
+            hass, entry, runtime, PVOutputSettings.from_options(entry.options)
+        )
+        entry.async_on_unload(runtime.pvoutput.async_start())
+
     async def _async_on_stop(_event: Event) -> None:
         # Entries are not unloaded on shutdown: free the iHM's TCP slot now.
         await _async_close_hubs(hubs)
@@ -214,20 +299,34 @@ async def async_migrate_entry(
         title = entry.title
         if entry.unique_id and title.endswith(f" {entry.unique_id}"):
             title = title.removesuffix(f" {entry.unique_id}")
-        registry = er.async_get(hass)
-        for key in _DISABLED_IN_1_2:
-            entity_id = registry.async_get_entity_id(
-                "sensor", DOMAIN, f"{entry.entry_id}_{key}{UNIQUE_ID_SUFFIX}"
-            )
-            reg_entry = registry.async_get(entity_id) if entity_id else None
-            if reg_entry is not None and reg_entry.disabled_by is None:
-                registry.async_update_entity(
-                    reg_entry.entity_id,
-                    disabled_by=er.RegistryEntryDisabler.INTEGRATION,
-                )
+        _disable_entities(hass, entry, _DISABLED_IN_1_2)
         hass.config_entries.async_update_entry(entry, title=title, minor_version=2)
         _LOGGER.debug("Migrated %s to version 1.2", entry.title)
+    if entry.version == 1 and entry.minor_version < 3:
+        # 1.3: behind an iHM, disable the inverter's meter-based counters that
+        # were still enabled by default (they read 0 or a frozen total).
+        if entry.data.get(CONF_IHM_ENABLED) and entry.data.get(CONF_IHM_HOST):
+            _disable_entities(hass, entry, _DISABLED_IN_1_3_WITH_IHM)
+        hass.config_entries.async_update_entry(entry, minor_version=3)
+        _LOGGER.debug("Migrated %s to version 1.3", entry.title)
     return True
+
+
+def _disable_entities(
+    hass: HomeAssistant, entry: SungrowEmsConfigEntry, keys: tuple[str, ...]
+) -> None:
+    """Disable these register sensors once, if they exist and are enabled."""
+    registry = er.async_get(hass)
+    for key in keys:
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}_{key}{UNIQUE_ID_SUFFIX}"
+        )
+        reg_entry = registry.async_get(entity_id) if entity_id else None
+        if reg_entry is not None and reg_entry.disabled_by is None:
+            registry.async_update_entity(
+                reg_entry.entity_id,
+                disabled_by=er.RegistryEntryDisabler.INTEGRATION,
+            )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SungrowEmsConfigEntry) -> bool:

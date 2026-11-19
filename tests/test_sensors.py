@@ -39,7 +39,7 @@ PACKAGE = Path(sensor_types.__file__).parent
 
 def test_entity_counts() -> None:
     # 161 register sensors + 2 poll status + 24 derived + 3 binary\n    # + 2 connection = 192
-    assert len(SENSOR_DESCRIPTIONS) == 161 == len(REGISTERS_BY_KEY)
+    assert len(SENSOR_DESCRIPTIONS) == 163 == len(REGISTERS_BY_KEY)
     assert len(DERIVED_SENSORS) == 24
     assert len(BINARY_SENSORS) == 3
     keys = [d.key for d in (*SENSOR_DESCRIPTIONS, *DERIVED_SENSORS, *BINARY_SENSORS)]
@@ -246,6 +246,39 @@ def test_battery_energy_two_stack_example() -> None:
     assert low.to_full == pytest.approx(36.67 * 0.94)
 
 
+#: Live SH10RS + iHM values, 19/Nov/2026 12:25 (diagnostics download).
+_LIVE_INV = {
+    "mb_daily_pv_generation": 32.9,
+    "mb_daily_battery_charge_from_pv": 12.7,
+    "mb_daily_battery_charge": 12.7,
+    "mb_daily_battery_discharge": 5.6,
+    "mb_daily_export_from_pv": 0.0,  # meter is on the iHM: 13005 reads 0
+}
+_LIVE_METERS = {"daily_import": 0.8, "daily_export": 0.7}
+
+
+def test_pv_split_uses_ihm_export_behind_an_ihm() -> None:
+    out = compute_derived(
+        _LIVE_INV, {}, _LIVE_METERS, efficiency=0.85, max_daily=200.0, capacity=None
+    )
+    assert out["daily_export_pct"] == 2
+    assert out["battery_charged_from_pv_pct"] == 39
+    assert out["daily_consumption_from_pv_pct"] == 59
+    assert out["daily_consumption_from_pv"] == 19.5
+    assert out["daily_consumption"] == 25.06  # iSolarCloud: 25 kWh
+    assert out["self_sufficient"] == 24.26
+    assert out["self_sufficient_pct"] + out["purchased_pct"] == 100
+
+
+def test_pv_split_uses_inverter_counter_without_ihm() -> None:
+    inv = {**_LIVE_INV, "mb_daily_export_from_pv": 1.5}
+    out = compute_derived(inv, {}, {}, efficiency=0.85, max_daily=200.0, capacity=None)
+    # 1.5 of 32.9 kWh PV went to the grid; no consumption without grid meters.
+    assert out["daily_export_pct"] == 4  # 4.56 %, largest-remainder rounding
+    assert out["daily_consumption_from_pv"] == 18.7
+    assert out["daily_consumption"] is None
+
+
 def test_charging_power_is_never_negative_zero() -> None:
     out = compute_derived(
         {"mb_battery_power": 0.0}, {}, {}, efficiency=0.85, max_daily=200, capacity=None
@@ -301,4 +334,8 @@ async def test_diagnostics_are_redacted(
     assert "inverter.test" not in text and "ihm.test" not in text
     assert set(diag["coordinators"]) == {"inverter", "ihm"}
     assert diag["coordinators"]["inverter"]["values"]["mb_battery_soc"] == 65.5
+    blocks = diag["coordinators"]["inverter"]["blocks"]
+    assert blocks["inv_system"]["age_s"] is not None
+    assert blocks["inv_system"]["refresh_interval"] is None
+    assert blocks["inv_system"]["fail_streak"] == 0
     assert diag["derived"]

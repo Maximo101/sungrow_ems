@@ -900,6 +900,32 @@ SENSOR_DESCRIPTIONS: tuple[SungrowSensorEntityDescription, ...] = (
     INVERTER_SENSORS + INVERTER_SETTING_SENSORS + IHM_SENSORS + IHM_SETTING_SENSORS
 )
 
+#: Inverter registers that depend on a smart meter wired directly to the
+#: inverter (protocol V1.1.17, note 1). Behind an iHomeManager the meter is
+#: on the iHM, so these read 0 (or, for the lifetime counters, a figure
+#: frozen from before the iHM): they are disabled by default when an iHM is
+#: configured. 13017/13018 are not marked "note 1" for nothing: on the SH10RS
+#: they come out as PV minus battery charge, ignoring grid export.
+METER_DEPENDENT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "mb_meter_active_power",  # 5601
+        "mb_meter_phase_a_active_power",  # 5603
+        "mb_meter_phase_b_active_power",  # 5605
+        "mb_meter_phase_c_active_power",  # 5607
+        "mb_daily_export_from_pv",  # 13005
+        "mb_total_export_from_pv",  # 13006
+        "mb_load_power",  # 13008
+        "mb_export_power",  # 13010
+        "mb_daily_direct_consumption",  # 13017
+        "mb_total_direct_consumption",  # 13018
+        "mb_self_consumption_today",  # 13029
+        "mb_daily_import_energy",  # 13036
+        "mb_total_import_energy",  # 13037
+        "mb_daily_export_energy",  # 13045
+        "mb_total_export_energy",  # 13046
+    }
+)
+
 
 def _check_complete() -> None:
     keys = [d.key for d in SENSOR_DESCRIPTIONS]

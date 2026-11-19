@@ -146,6 +146,62 @@ async def test_connect_failure_backs_off(inverter: FakeDevice) -> None:
     await hub.async_close()
 
 
+async def test_backoff_notices_do_not_nest_in_last_error(inverter: FakeDevice) -> None:
+    inverter.offline = True
+    hub = _hub(retries=0)
+    with pytest.raises(SungrowConnectionError, match="cannot connect"):
+        await hub.async_read_blocks([BLOCKS_BY_NAME["inv_system"]])
+    for _ in range(3):
+        with pytest.raises(SungrowConnectionError, match="waiting"):
+            await hub.async_read_blocks([BLOCKS_BY_NAME["inv_system"]])
+    error = hub.stats.last_error
+    assert error is not None
+    assert "cannot connect" in error
+    assert "waiting" not in error
+    assert hub.stats.last_error_at is not None
+    await hub.async_close()
+
+
+async def test_rejection_of_a_span_read_before_is_temporary(
+    inverter: FakeDevice,
+) -> None:
+    """A whole table rejected for a moment (e.g. a second client on the
+    WiNet-S) fails the block for that cycle; it is not marked unsupported."""
+    block = BLOCKS_BY_NAME["inv_mppt4"]
+    hub = _hub()
+    assert (await hub.async_read_blocks([block])).complete
+
+    inverter.rejected.update(range(block.start, block.end + 1))
+    result = await hub.async_read_blocks([block, BLOCKS_BY_NAME["inv_system"]])
+    assert block.name in result.blocks_failed
+    assert "inv_system" in result.blocks_ok
+    assert not result.unsupported_spans
+    assert hub.stats.transient_rejections == 1
+
+    inverter.rejected.clear()
+    inverter.calls.clear()
+    again = await hub.async_read_blocks([block])
+    assert again.complete
+    assert len(inverter.calls) == 1  # full block again, no learned split
+    await hub.async_close()
+
+
+async def test_span_rejected_many_times_becomes_unsupported(
+    inverter: FakeDevice,
+) -> None:
+    block = BLOCKS_BY_NAME["inv_mppt4"]
+    hub = _hub()
+    await hub.async_read_blocks([block])
+    inverter.rejected.update(range(block.start, block.end + 1))
+    results = [
+        await hub.async_read_blocks([block, BLOCKS_BY_NAME["inv_system"]])
+        for _ in range(10)
+    ]
+    assert all(block.name in r.blocks_failed for r in results[:9])
+    assert results[9].unsupported_spans
+    await hub.async_close()
+
+
 async def test_pacing_between_requests(inverter: FakeDevice) -> None:
     hub = _hub(min_request_interval=0.05)
     started = time.monotonic()

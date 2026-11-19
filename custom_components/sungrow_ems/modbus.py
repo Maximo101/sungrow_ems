@@ -8,9 +8,9 @@ Behaviour:
     a connection error or two consecutive timeouts, never per poll. pymodbus's
     own auto-reconnect is disabled so a background reconnect can never take a
     second TCP slot on the iHM (one connection per port).
-  * Read-only by design: the only function codes this hub can send are FC03
-    (read holding registers) and FC04 (read input registers). There is no
-    write path, and none will be added.
+  * Read-only: the only function codes this hub can send are FC03 (read
+    holding registers) and FC04 (read input registers). There is no write
+    path.
   * Every transaction runs under one ``asyncio.Lock``: exactly one request in
     flight per socket. The poll loop, a manual refresh and the config-flow
     probe (which reuses the live socket) can all ask at the same time.
@@ -84,6 +84,11 @@ TRANSIENT_CODES: frozenset[int] = frozenset(
     }
 )
 
+#: A span that has been read successfully is only marked unsupported after
+#: this many rejections in a row; before that a rejection is a temporary
+#: failure of its block.
+CONFIRMED_REJECTIONS_BEFORE_UNSUPPORTED: Final = 10
+
 #: The only pymodbus calls this hub can make. Both are reads.
 _FUNCTION_READ: Final[Mapping[Table, str]] = MappingProxyType(
     {
@@ -108,6 +113,20 @@ class SungrowConnectionError(SungrowModbusError):
 
 class SungrowTimeoutError(SungrowConnectionError):
     """No response within the timeout."""
+
+
+class SungrowBackoffError(SungrowConnectionError):
+    """Not connected, and still waiting before the next reconnect attempt."""
+
+
+class SungrowTransientRejection(SungrowModbusError):
+    """A span that has been read before was rejected this time.
+
+    Fails the block for this cycle (its values go stale, then unavailable
+    after ``failure_threshold`` cycles) instead of marking the span
+    unsupported for an hour. Typical cause: a second Modbus client polling
+    the same WiNet-S at the same moment.
+    """
 
 
 class SungrowProtocolError(SungrowModbusError):
@@ -168,6 +187,8 @@ class HubStats:
     read_cycles_failed: int = 0
     read_cycles_partial: int = 0
     last_error: str | None = None
+    last_error_at: float | None = None  # wall clock (time.time())
+    transient_rejections: int = 0
     last_success: float | None = None  # wall clock (time.time())
     last_cycle_duration: float | None = None
     last_request_duration: float | None = None
@@ -248,6 +269,7 @@ class SungrowModbusHub:
 
         self._last_io_end = 0.0
         self._connect_failures = 0
+        self._last_connect_error: str | None = None
         self._next_connect_at = 0.0
         self._consecutive_timeouts = 0
 
@@ -256,6 +278,10 @@ class SungrowModbusHub:
         self._plan_learned_at: dict[str, float] = {}
         # Rejected spans: (device_id, table, start, count) -> retry time (monotonic).
         self._unsupported: dict[tuple[int, Table, int, int], float] = {}
+        # Addresses that have answered at least once: (device_id, table, address).
+        self._confirmed: set[tuple[int, Table, int]] = set()
+        # Rejections in a row of confirmed spans: span key -> count.
+        self._rejection_streak: dict[tuple[int, Table, int, int], int] = {}
 
         self.stats = HubStats()
 
@@ -452,6 +478,21 @@ class SungrowModbusHub:
                 parts = (
                     split_span(block, start, count) if err.code in SPLIT_CODES else []
                 )
+                if self._is_transient_rejection(ukey):
+                    self.stats.transient_rejections += 1
+                    _LOGGER.debug(
+                        "%s: %s %d+%d rejected (%s) but has been read before; "
+                        "treating as a temporary failure",
+                        self._name,
+                        block.name,
+                        start,
+                        count,
+                        err,
+                    )
+                    raise SungrowTransientRejection(
+                        f"{self._name}: {block.name} {start}+{count} "
+                        f"temporarily rejected ({err})"
+                    ) from err
                 if parts:
                     _LOGGER.debug(
                         "%s: %s %d+%d rejected (%s), retrying as %s",
@@ -483,6 +524,10 @@ class SungrowModbusHub:
                 continue
 
             result.requests += 1
+            self._rejection_streak.pop(ukey, None)
+            self._confirmed.update(
+                (unit, block.table, address) for address in range(start, start + count)
+            )
             if self._unsupported.pop(ukey, None) is not None:
                 _LOGGER.info(
                     "%s: %s %d+%d readable again", self._name, block.name, start, count
@@ -497,6 +542,29 @@ class SungrowModbusHub:
             _LOGGER.debug(
                 "%s: learned plan for %s: %s", self._name, block.name, learned
             )
+
+    def _is_transient_rejection(self, ukey: tuple[int, Table, int, int]) -> bool:
+        """True if every address of the span has answered before and it has not
+        been rejected ``CONFIRMED_REJECTIONS_BEFORE_UNSUPPORTED`` times in a row.
+
+        Counts the rejection. After the limit the span is forgotten and handled
+        like a never-read span (split, then marked unsupported).
+        """
+        unit, table, start, count = ukey
+        if not all(
+            (unit, table, address) in self._confirmed
+            for address in range(start, start + count)
+        ):
+            return False
+        streak = self._rejection_streak.get(ukey, 0) + 1
+        if streak >= CONFIRMED_REJECTIONS_BEFORE_UNSUPPORTED:
+            self._rejection_streak.pop(ukey, None)
+            self._confirmed.difference_update(
+                (unit, table, address) for address in range(start, start + count)
+            )
+            return False
+        self._rejection_streak[ukey] = streak
+        return True
 
     @staticmethod
     def _chunk_runs(regs: Sequence[Register]) -> list[tuple[int, int]]:
@@ -551,7 +619,7 @@ class SungrowModbusHub:
                 await asyncio.sleep(0.25 * (attempt + 1))
 
         assert last is not None
-        self.stats.last_error = str(last)
+        self._record_error(last)
         if isinstance(last, SungrowExceptionResponse):
             # Busy / gateway target not responding after every retry: the
             # device behind the gateway is effectively unreachable.
@@ -619,6 +687,18 @@ class SungrowModbusHub:
                 )
             return response
 
+    def _record_error(self, err: Exception) -> None:
+        """Keep the most recent real error for diagnostics.
+
+        Backoff notices are not errors in their own right (they repeat the last
+        connect error), so they are not recorded: recording them nested each
+        notice inside the next one.
+        """
+        if isinstance(err, SungrowBackoffError):
+            return
+        self.stats.last_error = str(err)
+        self.stats.last_error_at = time.time()
+
     async def _pace(self) -> None:
         if self._min_interval <= 0:
             return
@@ -639,11 +719,11 @@ class SungrowModbusHub:
 
         now = time.monotonic()
         if not ignore_backoff and now < self._next_connect_at:
-            raise SungrowConnectionError(
+            raise SungrowBackoffError(
                 f"{self._name}: waiting {self._next_connect_at - now:.1f} s before reconnecting"
                 + (
-                    f" (last error: {self.stats.last_error})"
-                    if self.stats.last_error
+                    f" (last error: {self._last_connect_error})"
+                    if self._last_connect_error
                     else ""
                 )
             )
@@ -679,7 +759,8 @@ class SungrowModbusHub:
             message = (
                 f"{self._name}: cannot connect to {self._host}:{self._port}: {reason}"
             )
-            self.stats.last_error = message
+            self._last_connect_error = message
+            self._record_error(SungrowConnectionError(message))
             if self._connect_failures == 1:
                 _LOGGER.warning("%s; retrying in %.0f s", message, delay)
             else:

@@ -219,8 +219,22 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
     def diagnostics(self) -> dict[str, Any]:
         """Snapshot for diagnostics."""
         last = self.last_read
+        now = time.monotonic()
         return {
             "device": str(self.device),
+            # Seconds since each block was last read successfully, with its
+            # refresh interval (None = every poll). A block that is much older
+            # than its interval is serving stale values.
+            "blocks": {
+                block.name: {
+                    "age_s": round(now - self._block_last_read[block.name], 1)
+                    if block.name in self._block_last_read
+                    else None,
+                    "refresh_interval": block.refresh_interval,
+                    "fail_streak": self._block_fail_streak.get(block.name, 0),
+                }
+                for block in self.blocks
+            },
             "update_interval": self.update_interval.total_seconds()
             if self.update_interval
             else None,

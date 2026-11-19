@@ -34,9 +34,10 @@ Changes from the YAML, all deliberate:
   * PV split. Battery Charged from PV %, Daily Consumption from PV % and
     Daily Export to Grid % are the shares of today's PV that went to the
     battery, the home and the grid. They add up to exactly 100 (largest-
-    remainder rounding). PV to grid prefers the inverter's PV-only export
-    counter (13005) over the iHM grid export, and is capped at the PV left
-    after battery charging; PV to home is the remainder.
+    remainder rounding). PV to grid is the iHM daily export when an iHM is
+    configured (the inverter's meter-based 13005 reads 0 behind an iHM),
+    otherwise the inverter's PV-only export counter (13005). It is capped
+    at the PV left after battery charging; PV to home is the remainder.
   * Self Sufficient = PV to home + battery to home (discharge x efficiency,
     minus battery energy exported), capped at Daily Consumption. Self
     Sufficient % and Purchased % are shares of Daily Consumption and add up
@@ -535,14 +536,16 @@ def compute_derived(
     exp_c = None if exp is None else (exp if exp < max_daily else 0.0)
 
     # --- Where today's PV went: battery / home / grid (adds up to 100 %) ----
-    # PV to grid prefers the inverter's own PV-only export counter (13005),
-    # which excludes battery energy sent to the grid. The iHM grid export is
-    # the fallback. Either way it is capped at what PV had left after
-    # charging the battery, and PV to home is the remainder, so the three
-    # shares always add up to the day's PV generation.
-    pv_export_src = _f(inv.get("mb_daily_export_from_pv"))
+    # PV to grid comes from the iHM daily export when the iHM is there: the
+    # grid meter is wired to the iHM, so the inverter's meter-based counters
+    # (13005 and friends, protocol note 1) read 0 on such systems. Without an
+    # iHM the inverter's PV-only export counter (13005) is used. Either way
+    # it is capped at what PV had left after charging the battery, and PV to
+    # home is the remainder, so the three shares always add up to the day's
+    # PV generation.
+    pv_export_src = exp_c
     if pv_export_src is None:
-        pv_export_src = exp_c
+        pv_export_src = _f(inv.get("mb_daily_export_from_pv"))
     pv_to_battery = pv_to_grid = pv_to_home = None
     if pv is not None and charge_pv is not None and pv_export_src is not None:
         pv_to_battery = min(max(charge_pv, 0.0), max(pv, 0.0))

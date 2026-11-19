@@ -1,4 +1,9 @@
-"""Config flow for Sungrow EMS (local Modbus TCP, read-only)."""
+"""Config flow for Sungrow EMS (local Modbus TCP, read-only).
+
+Optional PVOutput.org upload: a toggle on the first form (setup) and on the
+options form. When it is on, three more steps follow: account, schedule and
+(live mode) parameter mapping. Settings are stored in the entry options.
+"""
 
 from __future__ import annotations
 
@@ -14,13 +19,21 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+    TimeSelector,
 )
 import voluptuous as vol
 
@@ -38,6 +51,16 @@ from .const import (
     CONF_INVERTER_HOST,
     CONF_INVERTER_PORT,
     CONF_INVERTER_SCAN_INTERVAL,
+    CONF_PVOUTPUT_API_KEY,
+    CONF_PVOUTPUT_CUMULATIVE,
+    CONF_PVOUTPUT_DAILY_TIME,
+    CONF_PVOUTPUT_ENABLED,
+    CONF_PVOUTPUT_INTERVAL_MODE,
+    CONF_PVOUTPUT_SEND_VALUES,
+    CONF_PVOUTPUT_STATUS_INTERVAL,
+    CONF_PVOUTPUT_SYSTEM_ID,
+    CONF_PVOUTPUT_TIER,
+    CONF_PVOUTPUT_UPLOAD_MODE,
     CONF_RETRIES,
     CONF_SPIKE_MAX_DAILY,
     CONF_SPIKE_MAX_JUMP,
@@ -53,6 +76,11 @@ from .const import (
     DEFAULT_INVERTER_DEVICE_ID,
     DEFAULT_INVERTER_PORT,
     DEFAULT_INVERTER_SCAN_INTERVAL,
+    DEFAULT_PVOUTPUT_DAILY_TIME,
+    DEFAULT_PVOUTPUT_SEND_VALUES,
+    DEFAULT_PVOUTPUT_STATUS_INTERVAL,
+    DEFAULT_PVOUTPUT_TIER,
+    DEFAULT_PVOUTPUT_UPLOAD_MODE,
     DEFAULT_RETRIES,
     DEFAULT_SPIKE_MAX_DAILY,
     DEFAULT_SPIKE_MAX_JUMP,
@@ -71,8 +99,33 @@ from .const import (
     MIN_SCAN_INTERVAL,
     MIN_SPIKE_REBASELINE_COUNT,
     MIN_TIMEOUT,
+    PVOUTPUT_BATTERY_PARAMS,
+    PVOUTPUT_ENERGY_PARAMS,
+    PVOUTPUT_EXTENDED_PARAMS,
+    PVOUTPUT_INTERVAL_AUTO,
+    PVOUTPUT_INTERVALS,
+    PVOUTPUT_MODE_DAILY,
+    PVOUTPUT_MODE_LIVE,
+    PVOUTPUT_POWER_PARAMS,
+    PVOUTPUT_SEND_ENERGY,
+    PVOUTPUT_SEND_POWER,
+    PVOUTPUT_SOURCE_AUTO,
+    PVOUTPUT_SOURCE_NONE,
+    PVOUTPUT_STANDARD_PARAMS,
+    PVOUTPUT_TIER_DONATION,
+    PVOUTPUT_TIER_FREE,
 )
 from .modbus import SungrowConnectionError, SungrowModbusError, SungrowModbusHub
+from .pvoutput import (
+    PVOUTPUT_SOURCES,
+    PVOutputAuthError,
+    PVOutputBadRequestError,
+    PVOutputError,
+    PVOutputRateLimitError,
+    async_validate_credentials,
+    is_entity_id,
+    option_key,
+)
 from .registers import IHM_DEVICE_TYPE_CODE, REGISTERS_BY_KEY
 
 _LOGGER = logging.getLogger(__name__)
@@ -157,6 +210,7 @@ def _normalise(user_input: Mapping[str, Any]) -> dict[str, Any]:
         if key in data:
             data[key] = int(data[key])
     data[CONF_IHM_ENABLED] = bool(data.get(CONF_IHM_ENABLED))
+    data.pop(CONF_PVOUTPUT_ENABLED, None)  # an option, not connection data
     return data
 
 
@@ -261,11 +315,287 @@ async def _async_probe(
     )
 
 
-class SungrowEmsConfigFlow(ConfigFlow, domain=DOMAIN):
+# ---------------------------------------------------------------------------
+# PVOutput steps (shared by the config flow and the options flow)
+# ---------------------------------------------------------------------------
+
+#: Every option the PVOutput steps own (copied as a block between flows).
+PVOUTPUT_OPTION_KEYS: tuple[str, ...] = (
+    CONF_PVOUTPUT_ENABLED,
+    CONF_PVOUTPUT_API_KEY,
+    CONF_PVOUTPUT_SYSTEM_ID,
+    CONF_PVOUTPUT_TIER,
+    CONF_PVOUTPUT_UPLOAD_MODE,
+    CONF_PVOUTPUT_INTERVAL_MODE,
+    CONF_PVOUTPUT_STATUS_INTERVAL,
+    CONF_PVOUTPUT_DAILY_TIME,
+    CONF_PVOUTPUT_CUMULATIVE,
+    CONF_PVOUTPUT_SEND_VALUES,
+    *(
+        option_key(p)
+        for p in (
+            *PVOUTPUT_STANDARD_PARAMS,
+            *PVOUTPUT_EXTENDED_PARAMS,
+            *PVOUTPUT_BATTERY_PARAMS,
+        )
+    ),
+)
+
+_PV_DEFAULTS: dict[str, Any] = {
+    CONF_PVOUTPUT_TIER: DEFAULT_PVOUTPUT_TIER,
+    CONF_PVOUTPUT_UPLOAD_MODE: DEFAULT_PVOUTPUT_UPLOAD_MODE,
+    CONF_PVOUTPUT_INTERVAL_MODE: PVOUTPUT_INTERVAL_AUTO,
+    CONF_PVOUTPUT_STATUS_INTERVAL: DEFAULT_PVOUTPUT_STATUS_INTERVAL,
+    CONF_PVOUTPUT_DAILY_TIME: DEFAULT_PVOUTPUT_DAILY_TIME,
+    CONF_PVOUTPUT_CUMULATIVE: False,
+    CONF_PVOUTPUT_SEND_VALUES: DEFAULT_PVOUTPUT_SEND_VALUES,
+    **{option_key(p): PVOUTPUT_SOURCE_AUTO for p in PVOUTPUT_STANDARD_PARAMS},
+    # Battery values default to auto; v7-v12 have no default (do not send).
+    **{option_key(p): PVOUTPUT_SOURCE_AUTO for p in PVOUTPUT_BATTERY_PARAMS},
+}
+
+
+def _select(options: list[str], translation_key: str) -> SelectSelector:
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=options,
+            translation_key=translation_key,
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def pvoutput_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """The PVOutput part of an options mapping."""
+    return {k: options[k] for k in PVOUTPUT_OPTION_KEYS if k in options}
+
+
+class _PVOutputSteps:
+    """Account -> schedule -> mapping. The host flow implements the finish."""
+
+    hass: HomeAssistant
+    _pv: dict[str, Any]
+    _pv_system_name: str | None
+
+    def _pv_init(self, current: Mapping[str, Any] | None = None) -> None:
+        self._pv = {**_PV_DEFAULTS, **pvoutput_options(current or {})}
+        self._pv[CONF_PVOUTPUT_ENABLED] = True
+        # v7-v12 now hold entity IDs. Older versions stored internal source
+        # keys there; drop those so the field starts as "do not send".
+        for param in PVOUTPUT_EXTENDED_PARAMS:
+            key = option_key(param)
+            if not is_entity_id(self._pv.get(key)):
+                self._pv.pop(key, None)
+        self._pv_system_name = None
+
+    async def _async_pvoutput_finish(self) -> ConfigFlowResult:
+        raise NotImplementedError
+
+    async def async_step_pvoutput_account(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """API key, system ID, account tier and upload mode (validated online)."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            api_key = str(user_input[CONF_PVOUTPUT_API_KEY]).strip()
+            system_id = str(user_input[CONF_PVOUTPUT_SYSTEM_ID]).strip()
+            try:
+                system = await async_validate_credentials(self.hass, api_key, system_id)
+            except PVOutputAuthError:
+                errors["base"] = "invalid_auth"
+            except PVOutputRateLimitError:
+                errors["base"] = "pvoutput_rate_limited"
+            except PVOutputBadRequestError:
+                errors["base"] = "pvoutput_invalid_system"
+            except PVOutputError as err:
+                _LOGGER.debug("PVOutput validation failed: %s", err)
+                errors["base"] = "pvoutput_cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected error validating PVOutput")
+                errors["base"] = "unknown"
+            else:
+                if (
+                    user_input[CONF_PVOUTPUT_TIER] == PVOUTPUT_TIER_DONATION
+                    and system.donation is False
+                ):
+                    # PVOutput reports the free hourly limit for this key.
+                    errors["base"] = "pvoutput_donation_not_active"
+                else:
+                    self._pv.update(
+                        {
+                            CONF_PVOUTPUT_API_KEY: api_key,
+                            CONF_PVOUTPUT_SYSTEM_ID: system_id,
+                            CONF_PVOUTPUT_TIER: user_input[CONF_PVOUTPUT_TIER],
+                            CONF_PVOUTPUT_UPLOAD_MODE: user_input[
+                                CONF_PVOUTPUT_UPLOAD_MODE
+                            ],
+                        }
+                    )
+                    if system.status_interval is not None:
+                        self._pv[CONF_PVOUTPUT_STATUS_INTERVAL] = system.status_interval
+                    self._pv_system_name = system.name
+                    return await self.async_step_pvoutput_schedule()
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PVOUTPUT_API_KEY): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Required(CONF_PVOUTPUT_SYSTEM_ID): TextSelector(),
+                vol.Required(CONF_PVOUTPUT_TIER): _select(
+                    [PVOUTPUT_TIER_FREE, PVOUTPUT_TIER_DONATION], "pvoutput_tier"
+                ),
+                vol.Required(CONF_PVOUTPUT_UPLOAD_MODE): _select(
+                    [PVOUTPUT_MODE_LIVE, PVOUTPUT_MODE_DAILY], "pvoutput_upload_mode"
+                ),
+            }
+        )
+        return self.async_show_form(  # type: ignore[attr-defined, no-any-return]
+            step_id="pvoutput_account",
+            data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                schema, {**self._pv, **(user_input or {})}
+            ),
+            errors=errors,
+        )
+
+    async def async_step_pvoutput_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Route to the live or daily schedule step."""
+        if self._pv[CONF_PVOUTPUT_UPLOAD_MODE] == PVOUTPUT_MODE_DAILY:
+            return await self.async_step_pvoutput_daily()
+        return await self.async_step_pvoutput_live()
+
+    async def async_step_pvoutput_live(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Live status: interval (auto from the PVOutput profile, or manual)."""
+        if user_input is not None:
+            self._pv[CONF_PVOUTPUT_INTERVAL_MODE] = str(
+                user_input[CONF_PVOUTPUT_INTERVAL_MODE]
+            )
+            self._pv[CONF_PVOUTPUT_SEND_VALUES] = str(
+                user_input.get(CONF_PVOUTPUT_SEND_VALUES, DEFAULT_PVOUTPUT_SEND_VALUES)
+            )
+            self._pv[CONF_PVOUTPUT_CUMULATIVE] = bool(
+                user_input.get(CONF_PVOUTPUT_CUMULATIVE, False)
+            )
+            return await self.async_step_pvoutput_mapping()
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PVOUTPUT_INTERVAL_MODE): _select(
+                    [PVOUTPUT_INTERVAL_AUTO, *(str(i) for i in PVOUTPUT_INTERVALS)],
+                    "pvoutput_interval_mode",
+                ),
+                vol.Required(CONF_PVOUTPUT_SEND_VALUES): _select(
+                    [PVOUTPUT_SEND_POWER, PVOUTPUT_SEND_ENERGY],
+                    "pvoutput_send_values",
+                ),
+                vol.Required(CONF_PVOUTPUT_CUMULATIVE): BooleanSelector(),
+            }
+        )
+        return self.async_show_form(  # type: ignore[attr-defined, no-any-return]
+            step_id="pvoutput_live",
+            data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                schema, self._pv
+            ),
+            description_placeholders=self._pv_placeholders(),
+        )
+
+    async def async_step_pvoutput_daily(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Daily output: local time of the once-a-day upload."""
+        if user_input is not None:
+            self._pv[CONF_PVOUTPUT_DAILY_TIME] = str(
+                user_input[CONF_PVOUTPUT_DAILY_TIME]
+            )
+            return await self._async_pvoutput_finish()
+
+        schema = vol.Schema({vol.Required(CONF_PVOUTPUT_DAILY_TIME): TimeSelector()})
+        return self.async_show_form(  # type: ignore[attr-defined, no-any-return]
+            step_id="pvoutput_daily",
+            data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                schema, self._pv
+            ),
+            description_placeholders=self._pv_placeholders(),
+        )
+
+    def _pv_placeholders(self) -> dict[str, str]:
+        return {
+            "system": self._pv_system_name or str(self._pv[CONF_PVOUTPUT_SYSTEM_ID]),
+            "interval": str(self._pv[CONF_PVOUTPUT_STATUS_INTERVAL]),
+        }
+
+    async def async_step_pvoutput_mapping(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Which value feeds each parameter.
+
+        Standard: v2 + v4 (power) or v1 + v3 (energy), plus v5 and v6, from
+        Sungrow EMS values. Donation accounts also get b1-b5 (battery, auto by
+        default) and v7-v12, each fed from any Home Assistant entity (empty =
+        do not send).
+        """
+        donation = self._pv[CONF_PVOUTPUT_TIER] == PVOUTPUT_TIER_DONATION
+        standard = (
+            PVOUTPUT_ENERGY_PARAMS
+            if self._pv.get(CONF_PVOUTPUT_SEND_VALUES) == PVOUTPUT_SEND_ENERGY
+            else PVOUTPUT_POWER_PARAMS
+        )
+        if user_input is not None:
+            selects = standard + (PVOUTPUT_BATTERY_PARAMS if donation else ())
+            for param in selects:
+                key = option_key(param)
+                if key in user_input:
+                    self._pv[key] = str(user_input[key])
+            if donation:
+                for param in PVOUTPUT_EXTENDED_PARAMS:
+                    key = option_key(param)
+                    value = user_input.get(key)
+                    if is_entity_id(value):
+                        self._pv[key] = str(value)
+                    else:  # cleared: do not send
+                        self._pv.pop(key, None)
+            return await self._async_pvoutput_finish()
+
+        sources = list(PVOUTPUT_SOURCES)
+        fields: dict[Any, Any] = {}
+        for param in standard:
+            fields[vol.Required(option_key(param))] = _select(
+                [PVOUTPUT_SOURCE_AUTO, *sources, PVOUTPUT_SOURCE_NONE],
+                "pvoutput_source",
+            )
+        if donation:
+            for param in PVOUTPUT_BATTERY_PARAMS:
+                fields[vol.Required(option_key(param))] = _select(
+                    [PVOUTPUT_SOURCE_AUTO, PVOUTPUT_SOURCE_NONE, *sources],
+                    "pvoutput_source",
+                )
+            for param in PVOUTPUT_EXTENDED_PARAMS:
+                fields[vol.Optional(option_key(param))] = EntitySelector(
+                    EntitySelectorConfig()
+                )
+        return self.async_show_form(  # type: ignore[attr-defined, no-any-return]
+            step_id="pvoutput_mapping",
+            data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                vol.Schema(fields), self._pv
+            ),
+        )
+
+
+class SungrowEmsConfigFlow(_PVOutputSteps, ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Sungrow EMS."""
 
     VERSION = 1
-    MINOR_VERSION = 2
+    MINOR_VERSION = 3
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._data: dict[str, Any] = {}
+        self._title = ""
+        self._pv_init()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -274,6 +604,7 @@ class SungrowEmsConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         defaults: Mapping[str, Any] = user_input or {}
         if user_input is not None:
+            pvoutput = bool(user_input.get(CONF_PVOUTPUT_ENABLED, False))
             data = _normalise(user_input)
             try:
                 info = await _async_probe(data)
@@ -285,12 +616,25 @@ class SungrowEmsConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 await self.async_set_unique_id(info.serial)
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=f"Sungrow {info.model}", data=data)
+                self._data = data
+                self._title = f"Sungrow {info.model}"
+                if pvoutput:
+                    return await self.async_step_pvoutput_account()
+                return self.async_create_entry(title=self._title, data=data)
 
-        return self.async_show_form(
-            step_id="user",
-            data_schema=_connection_schema(defaults),
-            errors=errors,
+        schema = _connection_schema(defaults).extend(
+            {
+                vol.Required(
+                    CONF_PVOUTPUT_ENABLED,
+                    default=bool(defaults.get(CONF_PVOUTPUT_ENABLED, False)),
+                ): BooleanSelector()
+            }
+        )
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+
+    async def _async_pvoutput_finish(self) -> ConfigFlowResult:
+        return self.async_create_entry(
+            title=self._title, data=self._data, options=dict(self._pv)
         )
 
     async def async_step_reconfigure(
@@ -327,19 +671,44 @@ class SungrowEmsConfigFlow(ConfigFlow, domain=DOMAIN):
         return SungrowEmsOptionsFlow()
 
 
-class SungrowEmsOptionsFlow(OptionsFlowWithReload):
-    """Polling intervals, failure threshold, battery capacity, efficiency, spike filter.
+class SungrowEmsOptionsFlow(_PVOutputSteps, OptionsFlowWithReload):
+    """Polling intervals, failure threshold, battery capacity, efficiency, spike
+    filter, and the optional PVOutput upload.
 
-    The entry reloads automatically when the options actually change.
+    The entry reloads automatically when the options actually change, so a new
+    PVOutput schedule, tier or mapping takes effect without a restart.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._general: dict[str, Any] = {}
+        self._pv = {}
+        self._pv_system_name = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        existing_pv = pvoutput_options(self.config_entry.options)
         if user_input is not None:
-            return self.async_create_entry(data=_normalise_options(user_input))
+            self._general = _normalise_options(user_input)
+            if user_input.get(CONF_PVOUTPUT_ENABLED):
+                self._pv_init(self.config_entry.options)
+                return await self.async_step_pvoutput_account()
+            # Off: keep the stored PVOutput settings so turning it back on
+            # later starts from them.
+            return self.async_create_entry(
+                data={
+                    **self._general,
+                    **existing_pv,
+                    CONF_PVOUTPUT_ENABLED: False,
+                }
+            )
 
-        current = {**_OPTION_DEFAULTS, **self.config_entry.options}
+        current = {
+            **_OPTION_DEFAULTS,
+            CONF_PVOUTPUT_ENABLED: False,
+            **self.config_entry.options,
+        }
         schema = vol.Schema(
             {
                 vol.Required(CONF_INVERTER_SCAN_INTERVAL): _number(
@@ -365,12 +734,16 @@ class SungrowEmsOptionsFlow(OptionsFlowWithReload):
                 vol.Required(CONF_SPIKE_REBASELINE_COUNT): _number(
                     MIN_SPIKE_REBASELINE_COUNT, MAX_SPIKE_REBASELINE_COUNT, 1
                 ),
+                vol.Required(CONF_PVOUTPUT_ENABLED): BooleanSelector(),
             }
         )
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(schema, current),
         )
+
+    async def _async_pvoutput_finish(self) -> ConfigFlowResult:
+        return self.async_create_entry(data={**self._general, **self._pv})
 
 
 _OPTION_DEFAULTS: dict[str, Any] = {

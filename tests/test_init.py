@@ -45,7 +45,7 @@ async def test_setup_creates_all_entities_and_two_devices(
     assert entry.state is ConfigEntryState.LOADED
 
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
-    assert len(entities) == 192
+    assert len(entities) == 194
     assert {e.domain for e in entities} == {"sensor", "binary_sensor"}
     assert all(e.unique_id.endswith("_ems") for e in entities)
 
@@ -384,3 +384,79 @@ async def test_existing_entity_ids_are_kept(
     assert state is not None
     assert state.name == "SH10RS Battery SoC"
     assert hass.states.get(f"{INV}battery_soc") is None
+
+
+_METER_KEYS_ON_BEFORE = (
+    "mb_total_export_from_pv",
+    "mb_daily_direct_consumption",
+    "mb_total_direct_consumption",
+)
+
+
+async def test_meter_registers_disabled_by_default_behind_ihm(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    await _setup(hass, entry)
+    registry = er.async_get(hass)
+    for key in (*_METER_KEYS_ON_BEFORE, "mb_daily_export_energy"):
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, make_unique_id(entry, key)
+        )
+        assert entity_id is not None
+        assert (
+            registry.async_get(entity_id).disabled_by
+            is er.RegistryEntryDisabler.INTEGRATION
+        )
+    # Everything else from the inverter stays as it was.
+    pv = registry.async_get_entity_id(
+        "sensor", DOMAIN, make_unique_id(entry, "mb_daily_pv_generation")
+    )
+    assert registry.async_get(pv).disabled_by is None
+
+
+async def test_meter_registers_stay_enabled_without_ihm(
+    hass: HomeAssistant, inverter: FakeDevice
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"inverter_host": "inverter.test", CONF_IHM_ENABLED: False},
+        unique_id=SERIAL,
+        version=1,
+        minor_version=3,
+    )
+    await _setup(hass, entry)
+    registry = er.async_get(hass)
+    for key in _METER_KEYS_ON_BEFORE:
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, make_unique_id(entry, key)
+        )
+        assert registry.async_get(entity_id).disabled_by is None
+
+
+async def test_migration_1_3_disables_meter_registers_once(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Existing installs: the three that were on by default are switched off;
+    a meter register the user had turned on themselves is left alone."""
+    entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    for key in (*_METER_KEYS_ON_BEFORE, "mb_load_power"):
+        registry.async_get_or_create(
+            "sensor", DOMAIN, make_unique_id(entry, key), config_entry=entry
+        )
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.minor_version == 3
+    for key in _METER_KEYS_ON_BEFORE:
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, make_unique_id(entry, key)
+        )
+        assert (
+            registry.async_get(entity_id).disabled_by
+            is er.RegistryEntryDisabler.INTEGRATION
+        )
+    load = registry.async_get_entity_id(
+        "sensor", DOMAIN, make_unique_id(entry, "mb_load_power")
+    )
+    assert registry.async_get(load).disabled_by is None

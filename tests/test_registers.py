@@ -37,7 +37,7 @@ def _reg(dtype: DataType, **kw: object) -> Register:
 
 def test_map_is_consistent() -> None:
     validate_map()
-    assert len(ALL_REGISTERS) == 161
+    assert len(ALL_REGISTERS) == 163
     assert len(BLOCKS) == 17
     assert len(REGISTERS_BY_KEY) == len(ALL_REGISTERS)
 
