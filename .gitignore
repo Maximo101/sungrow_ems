@@ -28,3 +28,8 @@ home-assistant.log*
 
 # Vendor protocol PDFs (keep out of the repo)
 *.pdf
+
+# Register snapshots from scripts/dump_registers.py (serial number, IPs)
+snapshots/
+snapshot_*.json
+snapshot_*.csv
