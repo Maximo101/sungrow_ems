@@ -1,0 +1,80 @@
+# Actions of this integration. pvoutput_push_now sends data to PVOutput.org and
+# never touches the devices.
+pvoutput_push_now:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sungrow_ems
+
+# Control actions (0.2.0). They refuse to run unless "Enable control" is on
+# in the integration options. Every write goes through the allowlisted,
+# rate-limited, read-back-verified writer.
+set_backup_reserve:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sungrow_ems
+    percent:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: box
+
+force_charge_start:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sungrow_ems
+    target_soc:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: box
+    power_kw:
+      required: false
+      selector:
+        number:
+          min: 0.1
+          max: 50
+          step: 0.1
+          unit_of_measurement: kW
+          mode: box
+    timeout_minutes:
+      required: false
+      selector:
+        number:
+          min: 10
+          max: 720
+          step: 5
+          unit_of_measurement: min
+          mode: box
+    method:
+      required: false
+      selector:
+        select:
+          options:
+            - ihm_compulsory
+            - inverter_compulsory
+            - reserve
+
+force_charge_cancel:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sungrow_ems

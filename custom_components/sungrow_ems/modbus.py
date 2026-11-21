@@ -8,9 +8,13 @@ Behaviour:
     a connection error or two consecutive timeouts, never per poll. pymodbus's
     own auto-reconnect is disabled so a background reconnect can never take a
     second TCP slot on the iHM (one connection per port).
-  * Read-only: the only function codes this hub can send are FC03 (read
-    holding registers) and FC04 (read input registers). There is no write
-    path.
+  * Reads use FC03 (holding) and FC04 (input) only. There is one write
+    method, ``async_write_holding`` (FC06 for one word, FC16 for more), and
+    the only caller allowed to use it is ``writer.SafeWriter``, which checks
+    every write against the allowlist in ``profiles.WRITE_TARGETS``
+    (enforced by tests/test_write_safety.py). Writes are never retried
+    blindly: a write that times out may have been applied, so the writer
+    reads back instead.
   * Every transaction runs under one ``asyncio.Lock``: exactly one request in
     flight per socket. The poll loop, a manual refresh and the config-flow
     probe (which reuses the live socket) can all ask at the same time.
@@ -89,13 +93,21 @@ TRANSIENT_CODES: frozenset[int] = frozenset(
 #: failure of its block.
 CONFIRMED_REJECTIONS_BEFORE_UNSUPPORTED: Final = 10
 
-#: The only pymodbus calls this hub can make. Both are reads.
+#: The pymodbus read calls this hub can make.
 _FUNCTION_READ: Final[Mapping[Table, str]] = MappingProxyType(
     {
         Table.INPUT: "read_input_registers",
         Table.HOLDING: "read_holding_registers",
     }
 )
+
+#: The pymodbus write calls this hub can make, by word count: FC06 for a
+#: single register, FC16 for two (U32/S32, low word first). Holding table
+#: only; nothing writes input registers, coils or anything else.
+_FUNCTION_WRITE_SINGLE: Final = "write_register"
+_FUNCTION_WRITE_MULTI: Final = "write_registers"
+#: Longest write the hub accepts (a U32 is 2 words).
+MAX_WRITE_WORDS: Final = 2
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +204,7 @@ class HubStats:
     last_success: float | None = None  # wall clock (time.time())
     last_cycle_duration: float | None = None
     last_request_duration: float | None = None
+    writes: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +422,93 @@ class SungrowModbusHub:
                 words.update({start + i: w for i, w in enumerate(data)})
             result.merge(decode_registers(regs, words))
         return result
+
+    # -- writes ------------------------------------------------------------
+
+    async def async_write_holding(
+        self, address: int, values: Sequence[int], *, device_id: int | None = None
+    ) -> None:
+        """Write 1-2 holding registers at a documented (1-based) address.
+
+        Only ``writer.SafeWriter`` calls this. FC06 for one word, FC16 for
+        two. A busy / gateway exception is retried (the device did not take
+        the request); a timeout or dropped socket is not, because the write
+        may have been applied: the caller reads back to find out.
+        """
+        words = [int(v) & 0xFFFF for v in values]
+        if not 1 <= len(words) <= MAX_WRITE_WORDS:
+            raise ValueError(
+                f"write of {len(words)} words refused (1..{MAX_WRITE_WORDS})"
+            )
+        unit = self._device_id if device_id is None else int(device_id)
+        last: SungrowModbusError | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                await self._transact_write(address, words, unit)
+            except SungrowExceptionResponse as err:
+                if err.code not in TRANSIENT_CODES:
+                    self._record_error(err)
+                    raise
+                last = err
+            else:
+                return
+            if self._closed:
+                break
+            if attempt < self._retries:
+                await asyncio.sleep(0.5 * (attempt + 1))
+        assert last is not None
+        self._record_error(last)
+        raise SungrowConnectionError(str(last)) from last
+
+    async def _transact_write(self, address: int, words: list[int], unit: int) -> None:
+        function = _FUNCTION_WRITE_SINGLE if len(words) == 1 else _FUNCTION_WRITE_MULTI
+        wire = to_wire(address)
+        async with self._lock:
+            client = await self._ensure_connected()
+            await self._pace()
+            self.stats.requests += 1
+            self.stats.writes += 1
+            started = time.monotonic()
+            try:
+                async with asyncio.timeout(self._timeout * 2 + 1):
+                    if len(words) == 1:
+                        response = await getattr(client, function)(
+                            wire, words[0], device_id=unit
+                        )
+                    else:
+                        response = await getattr(client, function)(
+                            wire, words, device_id=unit
+                        )
+            except TimeoutError as err:
+                self.stats.timeouts += 1
+                self._drop_client()
+                raise SungrowTimeoutError(
+                    f"{self._name}: {function} @ {address} timed out"
+                ) from err
+            except ModbusIOException as err:
+                self.stats.timeouts += 1
+                self._drop_client()
+                raise SungrowTimeoutError(
+                    f"{self._name}: no response to {function} @ {address}: {err}"
+                ) from err
+            except (ConnectionException, OSError, ModbusException) as err:
+                self.stats.connection_errors += 1
+                self._drop_client()
+                raise SungrowConnectionError(
+                    f"{self._name}: {function} @ {address} failed: {err}"
+                ) from err
+            finally:
+                self._last_io_end = time.monotonic()
+                self.stats.last_request_duration = self._last_io_end - started
+            if response is None:
+                raise SungrowTimeoutError(
+                    f"{self._name}: empty response to {function} @ {address}"
+                )
+            if response.isError():
+                self.stats.exception_responses += 1
+                raise SungrowExceptionResponse(
+                    function, address, getattr(response, "exception_code", None)
+                )
 
     # -- diagnostics -------------------------------------------------------
 

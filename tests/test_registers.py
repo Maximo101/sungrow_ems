@@ -149,3 +149,121 @@ def test_tables_do_not_alias() -> None:
     )
     assert result.raw["mb_inverter_alarm"] == 4
     assert result.values["mb_ems_mode"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Protocol V1.1.17 (SH8.0-10RS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "label"),
+    [
+        (0x0014, "Microgrid operation"),
+        (0x0080, "Derating running"),
+        (0x8100, "Derating running"),
+        (0x2500, "Communication fault"),
+        (0x2501, "Restarting"),
+    ],
+)
+def test_running_states_v1_1_17(code: int, label: str) -> None:
+    assert REGISTERS_BY_KEY["mb_running_state"].label(code) == label
+
+
+@pytest.mark.parametrize(
+    ("key", "words", "expected"),
+    [
+        ("mb_battery_current_13021", [0xFFFF], -0.1),
+        ("mb_battery_power_13022", [0xFFFF], -1),
+        ("mb_battery_power_13022", [0xF830], -2000),
+    ],
+)
+def test_13021_13022_are_s16_on_sh10rs(
+    key: str, words: list[int], expected: float
+) -> None:
+    """V1.1.17: S16 on SH8.0-10RS, so 0xFFFF is -1 count, not a sentinel."""
+    value, _ = decode_register(REGISTERS_BY_KEY[key], words)
+    assert value == expected
+
+
+def test_13021_13022_s16_sentinel_still_invalid() -> None:
+    for key in ("mb_battery_current_13021", "mb_battery_power_13022"):
+        assert decode_register(REGISTERS_BY_KEY[key], [0x7FFF]) == (None, None)
+
+
+def test_inverter_protocol_version_format() -> None:
+    from custom_components.sungrow_ems.registers import (
+        format_inverter_protocol_version,
+    )
+
+    # V1.1.17 Table 3 #2 example: 0x01010700 is V1.1.7.
+    assert format_inverter_protocol_version(0x01010700) == "V1.1.7"
+    assert format_inverter_protocol_version(0x01011100) == "V1.1.17"
+    assert format_inverter_protocol_version(None) is None
+
+
+def test_drm_state_labels() -> None:
+    reg = REGISTERS_BY_KEY["mb_drm_state"]
+    assert reg.label(1) == "DRM0"
+    assert reg.label(9) == "DRM8"
+    assert reg.label(0) == "Unknown (0)"
+
+
+def test_sh10rs_model_code() -> None:
+    assert REGISTERS_BY_KEY["mb_device_type_code"].label(0xD1B) == "SH10RS"
+
+
+def test_power_limitation_registers_in_existing_block() -> None:
+    """13088-13090 ride in the existing 13050-13100 read: no extra request."""
+    block = next(b for b in BLOCKS if b.name == "inv_hold_ems")
+    keys = {r.key for r in block.registers}
+    assert {
+        "mb_feed_in_limitation_ratio",
+        "mb_active_power_limitation",
+        "mb_active_power_limit_ratio",
+    } <= keys
+    assert (block.start, block.end) == (13050, 13100)
+    words = {a: 0 for a in range(13050, 13101)}
+    words.update({13088: 1000, 13089: 0x55, 13090: 500})
+    result = decode_tables([block], {Table.HOLDING: words})
+    assert result.values["mb_feed_in_limitation_ratio"] == 100.0
+    assert (
+        REGISTERS_BY_KEY["mb_active_power_limitation"].label(
+            result.raw["mb_active_power_limitation"]
+        )
+        == "Disabled"
+    )
+    assert result.values["mb_active_power_limit_ratio"] == 50.0
+
+
+def test_inverter_settings_read_rarely() -> None:
+    """[INV] 1.2 rule 6: RW registers are not polled often over WiNet-S."""
+    inv_holding = blocks_for(Device.INVERTER, Table.HOLDING)
+    assert inv_holding
+    assert all(b.refresh_interval == 300 for b in inv_holding)
+
+
+@pytest.mark.parametrize(
+    ("table", "first", "last"),
+    [
+        (Table.INPUT, 4950, 4951),  # Reserved since V1.1.7
+        (Table.INPUT, 5117, 5133),  # MPPT 5-10, SH50~125CX only
+        (Table.INPUT, 13200, 13207),  # Channel 2 meter, not on SH3.0-10RS
+        (Table.INPUT, 13250, 13369),  # Firmware info, not on SH3.0-10RS
+        (Table.HOLDING, 13001, 13001),  # DO configuration, not on SH3.0-10RS
+        (Table.HOLDING, 13017, 13018),  # Forced startup (command), PV limit (SHT)
+        (Table.HOLDING, 33274, 33274),  # Load rated power (needs DO)
+    ],
+)
+def test_sh10rs_unsupported_registers_not_mapped(
+    table: Table, first: int, last: int
+) -> None:
+    clash = [
+        r.key
+        for r in ALL_REGISTERS
+        if r.device is Device.INVERTER
+        and r.table is table
+        and r.address <= last
+        and r.end >= first
+    ]
+    assert clash == []

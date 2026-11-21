@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.0
+
+First GitHub release since 0.1.8: it includes everything in 0.1.9 and 0.1.10 below, which were not published separately.
+
+Control is **opt-in** (options → *Enable control (advanced)*, off by default). Existing installs stay read-only after the update.
+
+### Added
+- **Write safety framework.** One write path (`writer.SafeWriter`) with an allowlist (`profiles.WRITE_TARGETS`), model gate, range checks against live limits, no write when the value is already set, per-register cooldown, a daily write budget per register (EEPROM wear) and read-back verification. FC06 for one register, FC16 for U32 (low word first). Writes are refused while the device is not answering polls.
+- **Backup reserve** number (inverter 13100, Min SoC … 100 %) and action `sungrow_ems.set_backup_reserve`.
+- **Energy management mode** select (iHM 8024: Self-consumption / Forced mode). AI mode and Time plan have no documented code and show as unknown with the raw code.
+- **EV charger mode** select (iHM 8048: Fast / ECO & fast / ECO & economic; Time plan needs *Allow unverified writes*).
+- **EV charge current** number for an AC22 behind the WiNet-S (HR 21203, unverified community map; needs an AC22 unit ID and *Allow unverified writes*).
+- **Forced charge to a target SoC** (`force_charge_start` / `force_charge_cancel`) with automatic restore of the exact previous settings on target, time limit, cancel, Home Assistant stop, and after a crash (session stored before the first write). Methods: iHM Compulsory (default with an iHM), inverter Compulsory (no iHM only) and Backup reserve. Stops without writing back if the mode is changed in the app. **Force charge state** sensor.
+- **Model profiles** keyed by the inverter's device type code (SH8.0-10RS, SH5-25T, …): phases, MPPT count, blocks to skip, registers the protocol marks unsupported, documented write targets. On an SH20T the MPPT 4 block is skipped, inverter 13039 is not published (capacity comes from iHM 8147) and the phase B/C sensors are enabled once.
+- `scripts/dump_registers.py` (register snapshot to JSON + CSV, single-register fallback on refused blocks) and `tests/mock_modbus_server.py` (Modbus TCP mock seeded from a snapshot, with battery dynamics).
+- Diagnostics: write log, per-register write counts, force-charge session, model profile.
+
+### Changed
+- **Daily consumption is an energy balance**: PV + import − export − total battery charge (13040) + discharge (13026), no efficiency factor. It used to subtract only PV charging (13012) and multiply discharge by 0.85, which counted grid-to-battery energy as house load. Validated on 19–20 Nov 2026 against the iHM load integral (within 1–2 %); 20 Nov: 59.4 kWh (iHM 58.4, old formula 74.9, iSolarCloud Load 61.3 on the DC side).
+- **Self sufficient** = PV to home + battery discharge to home (no efficiency factor). Energy bought for the home is import minus grid-to-battery, so Self sufficient % and Purchased % treat battery energy as self-supplied.
+- **Daily battery charge from grid** never goes down within a day (no more 0.1 kWh flicker).
+- Platforms now include `number` and `select`; they create nothing while control is off. Control entities are removed again when control is turned off.
+
+### Removed
+- **Battery discharge efficiency** option. Config entry migration 1.3 → 1.4 removes it from existing installs.
+
+### Changed (development)
+- `tests/test_read_only.py` is replaced by `tests/test_write_safety.py`, which pins the write allowlist and checks that only `writer.py` calls the hub's write method.
+
 ## 0.1.10
 
 ### Fixed

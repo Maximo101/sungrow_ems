@@ -71,6 +71,9 @@ class FakeDevice:
         self.offline = False  # connect() fails
         self.open_sockets = 0
         self.connects = 0
+        self.write_ignored: set[int] = set()  # accepted but not applied
+        self.write_rejected: set[int] = set()  # answered with exception 0x03
+        self.writes: list[tuple[int, list[int], int]] = []
 
     def set(self, key: str, value: int | str) -> None:
         """Store a raw (unscaled) value or a string for a register key."""
@@ -94,8 +97,9 @@ class FakeDevice:
 
 
 class FakeClient:
-    """Replaces ``AsyncModbusTcpClient``. Exposes the two read calls only:
-    anything else (for example ``write_register``) raises AttributeError."""
+    """Replaces ``AsyncModbusTcpClient``: the two reads and the two holding
+    writes (FC06 / FC16). Anything else (coils, mask writes) raises
+    AttributeError."""
 
     devices: ClassVar[dict[int, FakeDevice]] = {}
 
@@ -148,6 +152,33 @@ class FakeClient:
         return await self._read(
             "read_holding_registers", "holding", address, count, device_id
         )
+
+    async def _write(
+        self, function: str, address: int, values: list[int], device_id: int
+    ) -> FakeResponse:
+        dev = self.device
+        documented = address + 1
+        dev.calls.append((function, documented, len(values), device_id))
+        dev.writes.append((documented, list(values), device_id))
+        span = set(range(documented, documented + len(values)))
+        if dev.rejected & span:
+            return FakeResponse(exception_code=0x02)
+        if dev.write_rejected & span:
+            return FakeResponse(exception_code=0x03)
+        for offset, value in enumerate(values):
+            if documented + offset not in dev.write_ignored:
+                dev.words["holding"][documented + offset] = value & 0xFFFF
+        return FakeResponse([])
+
+    async def write_register(
+        self, address: int, value: int, *, device_id: int = 1
+    ) -> FakeResponse:
+        return await self._write("write_register", address, [value], device_id)
+
+    async def write_registers(
+        self, address: int, values: list[int], *, device_id: int = 1
+    ) -> FakeResponse:
+        return await self._write("write_registers", address, list(values), device_id)
 
 
 @pytest.fixture

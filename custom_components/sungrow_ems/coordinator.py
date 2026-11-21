@@ -17,7 +17,13 @@ Reliability model:
   * Slow blocks (identity, firmware, settings readback) are read according to
     their ``refresh_interval`` instead of every poll.
 
-Read-only: coordinators only ever call ``hub.async_read_blocks``.
+Coordinators only ever read (``hub.async_read_blocks``). After a verified
+write the controller pushes the written value in with ``async_apply_write``
+so entities update at once instead of waiting for the next settings read.
+
+Model profiles (``profiles.py``): once the inverter has reported its device
+type code, blocks the model does not have are skipped and registers the
+protocol marks unsupported for the model are not published.
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ from .const import (
     MANUFACTURER,
 )
 from .modbus import ReadResult, SungrowModbusError, SungrowModbusHub
+from .profiles import ModelProfile, profile_for
 from .registers import (
     IHM_DEVICE_TYPE_CODE,
     REGISTERS_BY_KEY,
@@ -51,10 +58,12 @@ from .registers import (
     Device,
     Value,
     blocks_for,
+    decode_register,
     format_ihm_protocol_version,
 )
 
 if TYPE_CHECKING:
+    from .controller import SungrowController
     from .derived import DerivedEngine
     from .pvoutput import PVOutputUploader
 
@@ -171,6 +180,43 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
         return self._failures
 
     @property
+    def profile(self) -> ModelProfile:
+        """Model profile from the inverter's device type code (IR 5000).
+
+        For the iHM coordinator, or before the code is read, this is the
+        cautious "unknown" profile.
+        """
+        if self.device is not Device.INVERTER:
+            return profile_for(None)
+        return profile_for(self._raw.get("mb_device_type_code"))
+
+    @callback
+    def async_apply_write(self, key: str, raw: int) -> None:
+        """Publish a value the controller has just written and verified.
+
+        ``raw`` is the unsigned register value (both words for a U32). The
+        value is decoded exactly as a poll would decode it.
+        """
+        reg = REGISTERS_BY_KEY.get(key)
+        if reg is None or reg.device is not self.device:
+            return
+        words = (
+            [raw & 0xFFFF] if reg.count == 1 else [raw & 0xFFFF, (raw >> 16) & 0xFFFF]
+        )
+        value, decoded_raw = decode_register(reg, words)
+        if value is None:
+            return
+        stamp = dt_util.utcnow()
+        self._values[key] = value
+        if decoded_raw is not None:
+            self._raw[key] = decoded_raw
+        self._updated[key] = stamp
+        self._invalid_streak.pop(key, None)
+        self._last_change = stamp
+        if self.data is not None:
+            self.async_set_updated_data(self._snapshot())
+
+    @property
     def device_identifier(self) -> tuple[str, str]:
         """Device registry identifier for this coordinator's device."""
         base = self.config_entry.unique_id or self.config_entry.entry_id
@@ -263,7 +309,10 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
 
     def _due_blocks(self, now: float) -> list[Block]:
         due: list[Block] = []
+        skip = self.profile.skip_blocks
         for block in self.blocks:
+            if block.name in skip:
+                continue
             last = self._block_last_read.get(block.name)
             if (
                 last is None
@@ -284,6 +333,13 @@ class SungrowEmsCoordinator(DataUpdateCoordinator[SungrowEmsData]):
         self.last_read = result
         decoded = result.decode(due)
         stamp = dt_util.utcnow()
+        for key in self.profile.unsupported_keys:
+            # Documented as unsupported for this model: whatever it returns
+            # is not a reading.
+            decoded.values.pop(key, None)
+            decoded.raw.pop(key, None)
+            decoded.invalid.discard(key)
+            self._drop_key(key)
 
         if any(self._values.get(k) != v for k, v in decoded.values.items()):
             # Shows how often the device itself refreshes what it serves
@@ -411,6 +467,8 @@ class SungrowEmsRuntimeData:
     derived: DerivedEngine | None = None
     #: Optional PVOutput.org uploader (None unless enabled in the options).
     pvoutput: PVOutputUploader | None = None
+    #: Write controller (None unless "Enable control" is on in the options).
+    controller: SungrowController | None = None
 
     @property
     def coordinators(self) -> list[SungrowEmsCoordinator]:

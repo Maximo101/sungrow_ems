@@ -7,8 +7,10 @@ from datetime import timedelta
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
+import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -21,7 +23,7 @@ from custom_components.sungrow_ems.const import (
 )
 from custom_components.sungrow_ems.entity import make_unique_id
 
-from .conftest import SERIAL, FakeDevice
+from .conftest import ENTRY_DATA, SERIAL, FakeDevice
 
 INV = "sensor.sungrow_ems_inverter_"
 IHM = "sensor.sungrow_ems_ihomemanager_"
@@ -149,20 +151,38 @@ async def test_battery_stored_energy_entity_is_removed(
     assert registry.async_get(f"{INV}battery_usable_energy") is not None
 
 
-async def test_no_write_function_is_ever_called(
+async def test_control_off_never_writes(
     hass: HomeAssistant,
     entry: MockConfigEntry,
     inverter: FakeDevice,
     ihm: FakeDevice,
 ) -> None:
+    """Default install: read-only. No control entities, control actions refuse."""
     await _setup(hass, entry)
     await _poll(hass)
     await _poll(hass)
     allowed = {"read_input_registers", "read_holding_registers"}
     assert inverter.functions() <= allowed
     assert ihm.functions() <= allowed
-    # Only the PVOutput upload action, which never touches the devices.
-    assert set(hass.services.async_services().get(DOMAIN, {})) <= {"pvoutput_push_now"}
+    assert entry.runtime_data.controller is None
+    assert hass.states.async_entity_ids("number") == []
+    assert hass.states.async_entity_ids("select") == []
+    assert set(hass.services.async_services().get(DOMAIN, {})) == {
+        "pvoutput_push_now",
+        "set_backup_reserve",
+        "force_charge_start",
+        "force_charge_cancel",
+    }
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN, "set_backup_reserve", {"percent": 10}, blocking=True
+        )
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN, "force_charge_start", {"target_soc": 80}, blocking=True
+        )
+    assert inverter.functions() <= allowed
+    assert ihm.functions() <= allowed
 
 
 async def test_ihm_settings_are_not_read_every_poll(
@@ -447,7 +467,7 @@ async def test_migration_1_3_disables_meter_registers_once(
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     for key in _METER_KEYS_ON_BEFORE:
         entity_id = registry.async_get_entity_id(
             "sensor", DOMAIN, make_unique_id(entry, key)
@@ -460,3 +480,40 @@ async def test_migration_1_3_disables_meter_registers_once(
         "sensor", DOMAIN, make_unique_id(entry, "mb_load_power")
     )
     assert registry.async_get(load).disabled_by is None
+
+
+async def test_daily_battery_charge_from_grid_never_goes_down(
+    hass: HomeAssistant, entry: MockConfigEntry, inverter: FakeDevice
+) -> None:
+    """13040 and 13012 tick at different moments: no 0.1 kWh flicker."""
+    inverter.set("mb_daily_battery_charge", 186)  # 18.6 kWh
+    inverter.set("mb_daily_battery_charge_from_pv", 146)  # 14.6 kWh
+    await _setup(hass, entry)
+    engine = entry.runtime_data.derived
+    assert engine.values["daily_battery_charge_from_grid"] == 4.0
+    inverter.set("mb_daily_battery_charge_from_pv", 147)  # 13012 ticked first
+    await entry.runtime_data.inverter.async_refresh()
+    await hass.async_block_till_done()
+    assert engine.values["daily_battery_charge_from_grid"] == 4.0
+    inverter.set("mb_daily_battery_charge", 188)
+    await entry.runtime_data.inverter.async_refresh()
+    await hass.async_block_till_done()
+    assert engine.values["daily_battery_charge_from_grid"] == 4.1
+
+
+async def test_migration_1_4_retires_discharge_efficiency(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Sungrow SH10RS",
+        data=dict(ENTRY_DATA),
+        options={"discharge_efficiency": 0.85, "inverter_scan_interval": 15},
+        unique_id=SERIAL,
+        version=1,
+        minor_version=3,
+    )
+    await _setup(hass, entry)
+    assert entry.minor_version == 4
+    assert "discharge_efficiency" not in entry.options
+    assert entry.options["inverter_scan_interval"] == 15

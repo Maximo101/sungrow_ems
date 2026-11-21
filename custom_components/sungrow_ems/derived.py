@@ -38,10 +38,19 @@ Changes from the YAML, all deliberate:
     configured (the inverter's meter-based 13005 reads 0 behind an iHM),
     otherwise the inverter's PV-only export counter (13005). It is capped
     at the PV left after battery charging; PV to home is the remainder.
-  * Self Sufficient = PV to home + battery to home (discharge x efficiency,
-    minus battery energy exported), capped at Daily Consumption. Self
-    Sufficient % and Purchased % are shares of Daily Consumption and add up
-    to 100.
+  * Daily Consumption is the AC energy balance (0.2.0, validated against
+    the iHM's own load measurement on 19-20 Nov 2026, within 1-2 %):
+    PV + import - export - total battery charge (13040) + battery discharge
+    (13026). No efficiency factor. Grid energy that went into the battery is
+    not house load. It reads about 2-3 % below iSolarCloud's Load, which
+    counts battery discharge on the DC side.
+  * Self Sufficient = PV to home + battery to home (discharge minus battery
+    energy exported), capped at Daily Consumption. Battery energy counts as
+    self-supplied whatever charged it, so energy bought for the home is
+    import minus grid-to-battery. Self Sufficient % and Purchased % are
+    shares of Daily Consumption and add up to 100.
+  * Daily Battery Charge from Grid never goes down within a day (13040 and
+    13012 tick at different moments, which made it flicker by 0.1 kWh).
   * Battery capacity has no hard-coded fallback: options override, then iHM
     8147, inverter 13039, inverter 5639, otherwise unavailable.
 
@@ -57,9 +66,6 @@ Charged, Battery Time Remaining). None of them uses a fixed number:
     to the Backup reserve SoC (13100) on grid, down to Min SoC when off grid.
   * The two time estimates divide the energy still to go by the battery power
     averaged over two minutes.
-
-Kept as in the YAML (flag for a later decision): Daily Consumption subtracts
-only the PV share of battery charging and applies the discharge efficiency.
 """
 
 from __future__ import annotations
@@ -90,12 +96,10 @@ from .const import (
     BATTERY_IDLE_POWER_W,
     BATTERY_POWER_AVERAGE_SECONDS,
     CONF_BATTERY_CAPACITY,
-    CONF_DISCHARGE_EFFICIENCY,
     CONF_SPIKE_MAX_DAILY,
     CONF_SPIKE_MAX_JUMP,
     CONF_SPIKE_REBASELINE_COUNT,
     DEFAULT_BATTERY_CAPACITY_OPTION,
-    DEFAULT_DISCHARGE_EFFICIENCY,
     DEFAULT_SPIKE_MAX_DAILY,
     DEFAULT_SPIKE_MAX_JUMP,
     DEFAULT_SPIKE_REBASELINE_COUNT,
@@ -487,7 +491,6 @@ def compute_derived(
     ihm: Mapping[str, Any],
     meters: Mapping[str, float | None],
     *,
-    efficiency: float,
     max_daily: float,
     capacity: float | None,
     off_grid: bool | None = None,
@@ -567,20 +570,22 @@ def compute_derived(
         out["daily_consumption_from_pv_pct"] = home_pct
         out["daily_export_pct"] = grid_pct
 
-    # --- Daily consumption (energy balance, as in the YAML) -----------------
-    if None in (pv, imp_c, exp_c, charge_pv, discharge):
+    # --- Daily consumption: AC energy balance --------------------------------
+    # PV + import - export - everything that went into the battery (from PV
+    # and from the grid) + everything that came out of it.
+    if None in (pv, imp_c, exp_c, charge_total, discharge):
         consumption = None
     else:
         assert pv is not None and imp_c is not None and exp_c is not None
-        assert charge_pv is not None and discharge is not None
-        net = pv + imp_c - exp_c - charge_pv + discharge * efficiency
+        assert charge_total is not None and discharge is not None
+        net = pv + imp_c - exp_c - charge_total + discharge
         consumption = max(net, 0.0)
     out["daily_consumption"] = None if consumption is None else round(consumption, 2)
 
     # --- Self sufficiency: consumption covered by PV and battery ------------
-    # Battery to home = discharge (after efficiency) minus any battery energy
-    # that went to the grid instead (grid export beyond the PV share). With
-    # that, PV to home + battery to home + import = daily consumption, so
+    # Battery to home = discharge minus any battery energy that went to the
+    # grid instead (grid export beyond the PV share). With that, PV to home +
+    # battery to home + (import - grid to battery) = daily consumption, so
     # Self sufficient never exceeds consumption and Self sufficient % plus
     # Purchased % is always 100.
     self_kwh = None
@@ -592,7 +597,7 @@ def compute_derived(
         and exp_c is not None
     ):
         battery_export = max(exp_c - pv_to_grid, 0.0)
-        battery_to_home = max(discharge * efficiency - battery_export, 0.0)
+        battery_to_home = max(discharge - battery_export, 0.0)
         self_kwh = min(pv_to_home + battery_to_home, consumption)
     out["self_sufficient"] = None if self_kwh is None else round(self_kwh, 2)
     if self_kwh is None or consumption is None:
@@ -705,9 +710,9 @@ class DerivedEngine:
         self.max_daily = float(
             get_option(entry, CONF_SPIKE_MAX_DAILY, DEFAULT_SPIKE_MAX_DAILY)
         )
-        self.efficiency = float(
-            get_option(entry, CONF_DISCHARGE_EFFICIENCY, DEFAULT_DISCHARGE_EFFICIENCY)
-        )
+        #: Highest Daily battery charge from grid seen today (it never goes
+        #: down within a day).
+        self._grid_charge_max: tuple[date, float] | None = None
         self.capacity_option = float(
             get_option(entry, CONF_BATTERY_CAPACITY, DEFAULT_BATTERY_CAPACITY_OPTION)
         )
@@ -872,12 +877,19 @@ class DerivedEngine:
             inv,
             ihm,
             meters,
-            efficiency=self.efficiency,
             max_daily=self.max_daily,
             capacity=self.battery_capacity,
             off_grid=self.off_grid,
             average_battery_w=self.battery_average.mean,
         )
+        grid_charge = self.values.get("daily_battery_charge_from_grid")
+        if grid_charge is not None:
+            if self._grid_charge_max is None or self._grid_charge_max[0] != today:
+                self._grid_charge_max = (today, grid_charge)
+            elif grid_charge < self._grid_charge_max[1]:
+                self.values["daily_battery_charge_from_grid"] = self._grid_charge_max[1]
+            else:
+                self._grid_charge_max = (today, grid_charge)
 
     def meter_value(self, key: str) -> float | None:
         """Current value of a stateful component, None until it is ready."""

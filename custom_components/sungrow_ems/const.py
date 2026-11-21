@@ -1,4 +1,4 @@
-"""Constants for the Sungrow EMS integration (read-only Modbus TCP telemetry)."""
+"""Constants for the Sungrow EMS integration (local Modbus TCP telemetry and opt-in control)."""
 
 from __future__ import annotations
 
@@ -30,9 +30,15 @@ DEVICE_NAME_IHM: Final = "iHM"
 ENTITY_ID_PREFIX_INVERTER: Final = "sungrow_ems_inverter"
 ENTITY_ID_PREFIX_IHM: Final = "sungrow_ems_ihomemanager"
 
-#: Platforms set up by __init__.py. Read-only: sensors only. There are no
-#: control platforms (select, number, switch) or services at this stage.
-PLATFORMS: Final[list[Platform]] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+#: Platforms set up by __init__.py. NUMBER and SELECT only create entities
+#: when "Enable control" is on in the options; otherwise they add nothing and
+#: the integration stays read-only.
+PLATFORMS: Final[list[Platform]] = [
+    Platform.BINARY_SENSOR,
+    Platform.NUMBER,
+    Platform.SELECT,
+    Platform.SENSOR,
+]
 
 # ---------------------------------------------------------------------------
 # Config entry data: connection settings (config flow / reconfigure)
@@ -65,6 +71,7 @@ CONF_RETRIES: Final = "retries"
 CONF_IHM_REQUEST_INTERVAL: Final = "ihm_request_interval"
 CONF_FAILURE_THRESHOLD: Final = "failure_threshold"
 CONF_BATTERY_CAPACITY: Final = "battery_capacity"
+#: Retired in 0.2.0 (config entry 1.4): removed from stored options.
 CONF_DISCHARGE_EFFICIENCY: Final = "discharge_efficiency"
 CONF_SPIKE_MAX_JUMP: Final = "spike_max_jump"
 CONF_SPIKE_MAX_DAILY: Final = "spike_max_daily"
@@ -110,8 +117,6 @@ MAX_FAILURE_THRESHOLD: Final = 60
 DEFAULT_BATTERY_CAPACITY_OPTION: Final = 0.0
 MAX_BATTERY_CAPACITY: Final = 200.0
 
-#: DC-to-AC battery discharge efficiency used by Daily Consumption.
-DEFAULT_DISCHARGE_EFFICIENCY: Final = 0.85
 
 #: Grid Import/Export Safe: reject a single jump on a cumulative meter larger
 #: than this (kWh).
@@ -215,3 +220,34 @@ PVOUTPUT_TIMEOUT: Final = 15.0
 
 SERVICE_PVOUTPUT_PUSH_NOW: Final = "pvoutput_push_now"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
+
+# ---------------------------------------------------------------------------
+# Control (opt-in, off by default). Stored in entry.options.
+# ---------------------------------------------------------------------------
+CONF_CONTROL_ENABLED: Final = "control_enabled"
+#: Also allow write targets / values that only come from community maps or
+#: are not confirmed on hardware (AC22 current, EV charger "Time plan").
+CONF_CONTROL_ALLOW_UNVERIFIED: Final = "control_allow_unverified"
+#: Unit ID of the AC22 behind the inverter's WiNet-S (see the WiNet-S web
+#: device list). 0 = no AC22 current control.
+CONF_AC22_UNIT: Final = "ac22_unit"
+#: Longest forced charge before it is stopped and settings are restored.
+CONF_FORCE_CHARGE_TIMEOUT: Final = "force_charge_timeout"
+
+DEFAULT_AC22_UNIT: Final = 0
+DEFAULT_FORCE_CHARGE_TIMEOUT: Final = 240  # minutes
+MIN_FORCE_CHARGE_TIMEOUT: Final = 10
+MAX_FORCE_CHARGE_TIMEOUT: Final = 720
+
+SERVICE_SET_BACKUP_RESERVE: Final = "set_backup_reserve"
+SERVICE_FORCE_CHARGE_START: Final = "force_charge_start"
+SERVICE_FORCE_CHARGE_CANCEL: Final = "force_charge_cancel"
+ATTR_PERCENT: Final = "percent"
+ATTR_TARGET_SOC: Final = "target_soc"
+ATTR_POWER_KW: Final = "power_kw"
+ATTR_TIMEOUT_MINUTES: Final = "timeout_minutes"
+ATTR_METHOD: Final = "method"
+
+#: Entry data flag: phase B/C sensors were enabled once for a three-phase
+#: inverter (re-disabling them afterwards is respected).
+DATA_THREE_PHASE_ENABLED: Final = "three_phase_entities_enabled"

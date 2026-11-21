@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Pre-release sanity check for sungrow_ems. Run from the repo root.
-# Usage: ./precheck.sh v0.1.8
+# Usage: ./precheck.sh v0.2.0
 set -u
-TAG="${1:-v0.1.8}"
+TAG="${1:-v0.2.0}"
 fail=0
 
 echo "== 1. Personal / site data =="
@@ -25,16 +25,33 @@ if [ -f hacs.json ]; then python3 -m json.tool hacs.json >/dev/null && echo "ok:
 [ -f README.md ] && echo "ok: README.md present" || { echo "!! README.md missing"; fail=1; }
 [ -f LICENSE ] && echo "ok: LICENSE present" || { echo "!! LICENSE missing (check upstream licence terms)"; fail=1; }
 
-echo "== 3. Read-only =="
-if ls custom_components/sungrow_ems/{select,number,switch,button}.py custom_components/sungrow_ems/services.yaml 2>/dev/null; then
-  echo "!! Control platform or service files present: this integration is read-only"; fail=1
+echo "== 3. Write safety =="
+# Control is opt-in (0.2.0+). pymodbus writes may only appear in modbus.py,
+# and only writer.py (SafeWriter) may call the hub's write method.
+if grep -rnE 'write_coils?|mask_write|readwrite_registers|encode_(value|block)' custom_components/sungrow_ems --include='*.py'; then
+  echo "!! Forbidden write calls found above"; fail=1
 else
-  echo "ok: no select/number/switch/button platforms or services"
+  echo "ok: no coil / mask / read-write calls"
 fi
-if grep -rnE 'write_registers?|write_coils?|encode_(value|block)' custom_components/sungrow_ems --include='*.py'; then
-  echo "!! Modbus write code found above"; fail=1
+if grep -rlE '\bwrite_registers?\b' custom_components/sungrow_ems --include='*.py' | grep -v '/modbus.py$'; then
+  echo "!! pymodbus write calls outside modbus.py"; fail=1
 else
-  echo "ok: no Modbus write code"
+  echo "ok: pymodbus writes only in modbus.py"
+fi
+if grep -rlE '\basync_write_holding\b' custom_components/sungrow_ems --include='*.py' | grep -vE '/(modbus|writer)\.py$'; then
+  echo "!! hub writes outside SafeWriter"; fail=1
+else
+  echo "ok: hub writes only through writer.SafeWriter"
+fi
+if python3 -m pytest -q tests/test_write_safety.py >/dev/null 2>&1; then
+  echo "ok: write allowlist matches tests/test_write_safety.py"
+else
+  echo "!! tests/test_write_safety.py fails (allowlist changed?)"; fail=1
+fi
+if git ls-files | grep -E '(^|/)snapshots/|snapshot_.*\.(json|csv)$'; then
+  echo "!! Register snapshots are tracked (they hold the serial and IPs)"; fail=1
+else
+  echo "ok: no register snapshots tracked"
 fi
 
 [ $fail -eq 0 ] && echo "== All checks passed: tag $TAG and mark it as a pre-release ==" || echo "== Fix the items marked !! before tagging =="

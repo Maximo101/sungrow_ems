@@ -1,4 +1,4 @@
-"""Config flow for Sungrow EMS (local Modbus TCP, read-only).
+"""Config flow for Sungrow EMS (local Modbus TCP; control is opt-in in the options).
 
 Optional PVOutput.org upload: a toggle on the first form (setup) and on the
 options form. When it is on, three more steps follow: account, schedule and
@@ -38,9 +38,12 @@ from homeassistant.helpers.selector import (
 import voluptuous as vol
 
 from .const import (
+    CONF_AC22_UNIT,
     CONF_BATTERY_CAPACITY,
-    CONF_DISCHARGE_EFFICIENCY,
+    CONF_CONTROL_ALLOW_UNVERIFIED,
+    CONF_CONTROL_ENABLED,
     CONF_FAILURE_THRESHOLD,
+    CONF_FORCE_CHARGE_TIMEOUT,
     CONF_IHM_DEVICE_ID,
     CONF_IHM_ENABLED,
     CONF_IHM_HOST,
@@ -66,9 +69,10 @@ from .const import (
     CONF_SPIKE_MAX_JUMP,
     CONF_SPIKE_REBASELINE_COUNT,
     CONF_TIMEOUT,
+    DEFAULT_AC22_UNIT,
     DEFAULT_BATTERY_CAPACITY_OPTION,
-    DEFAULT_DISCHARGE_EFFICIENCY,
     DEFAULT_FAILURE_THRESHOLD,
+    DEFAULT_FORCE_CHARGE_TIMEOUT,
     DEFAULT_IHM_DEVICE_ID,
     DEFAULT_IHM_PORT,
     DEFAULT_IHM_REQUEST_INTERVAL,
@@ -89,12 +93,14 @@ from .const import (
     DOMAIN,
     MAX_BATTERY_CAPACITY,
     MAX_FAILURE_THRESHOLD,
+    MAX_FORCE_CHARGE_TIMEOUT,
     MAX_IHM_REQUEST_INTERVAL,
     MAX_RETRIES,
     MAX_SCAN_INTERVAL,
     MAX_SPIKE_REBASELINE_COUNT,
     MAX_TIMEOUT,
     MIN_FAILURE_THRESHOLD,
+    MIN_FORCE_CHARGE_TIMEOUT,
     MIN_IHM_REQUEST_INTERVAL,
     MIN_SCAN_INTERVAL,
     MIN_SPIKE_REBASELINE_COUNT,
@@ -589,7 +595,7 @@ class SungrowEmsConfigFlow(_PVOutputSteps, ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Sungrow EMS."""
 
     VERSION = 1
-    MINOR_VERSION = 3
+    MINOR_VERSION = 4
 
     def __init__(self) -> None:
         super().__init__()
@@ -672,8 +678,8 @@ class SungrowEmsConfigFlow(_PVOutputSteps, ConfigFlow, domain=DOMAIN):
 
 
 class SungrowEmsOptionsFlow(_PVOutputSteps, OptionsFlowWithReload):
-    """Polling intervals, failure threshold, battery capacity, efficiency, spike
-    filter, and the optional PVOutput upload.
+    """Polling intervals, failure threshold, battery capacity, spike
+    filter, opt-in control, and the optional PVOutput upload.
 
     The entry reloads automatically when the options actually change, so a new
     PVOutput schedule, tier or mapping takes effect without a restart.
@@ -682,31 +688,31 @@ class SungrowEmsOptionsFlow(_PVOutputSteps, OptionsFlowWithReload):
     def __init__(self) -> None:
         super().__init__()
         self._general: dict[str, Any] = {}
+        self._control: dict[str, Any] = {}
+        self._pv_enabled = False
         self._pv = {}
         self._pv_system_name = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        existing_pv = pvoutput_options(self.config_entry.options)
         if user_input is not None:
             self._general = _normalise_options(user_input)
-            if user_input.get(CONF_PVOUTPUT_ENABLED):
-                self._pv_init(self.config_entry.options)
-                return await self.async_step_pvoutput_account()
-            # Off: keep the stored PVOutput settings so turning it back on
+            self._pv_enabled = bool(user_input.get(CONF_PVOUTPUT_ENABLED))
+            if user_input.get(CONF_CONTROL_ENABLED):
+                return await self.async_step_control()
+            # Off: keep the stored control settings so turning it back on
             # later starts from them.
-            return self.async_create_entry(
-                data={
-                    **self._general,
-                    **existing_pv,
-                    CONF_PVOUTPUT_ENABLED: False,
-                }
-            )
+            self._control = {
+                **control_options(self.config_entry.options),
+                CONF_CONTROL_ENABLED: False,
+            }
+            return await self._async_after_control()
 
         current = {
             **_OPTION_DEFAULTS,
             CONF_PVOUTPUT_ENABLED: False,
+            CONF_CONTROL_ENABLED: False,
             **self.config_entry.options,
         }
         schema = vol.Schema(
@@ -728,12 +734,12 @@ class SungrowEmsOptionsFlow(_PVOutputSteps, OptionsFlowWithReload):
                 vol.Required(CONF_BATTERY_CAPACITY): _number(
                     0, MAX_BATTERY_CAPACITY, 0.01, "kWh"
                 ),
-                vol.Required(CONF_DISCHARGE_EFFICIENCY): _number(0.5, 1.0, 0.01),
                 vol.Required(CONF_SPIKE_MAX_JUMP): _number(1, 1000, 1, "kWh"),
                 vol.Required(CONF_SPIKE_MAX_DAILY): _number(10, 2000, 1, "kWh"),
                 vol.Required(CONF_SPIKE_REBASELINE_COUNT): _number(
                     MIN_SPIKE_REBASELINE_COUNT, MAX_SPIKE_REBASELINE_COUNT, 1
                 ),
+                vol.Required(CONF_CONTROL_ENABLED): BooleanSelector(),
                 vol.Required(CONF_PVOUTPUT_ENABLED): BooleanSelector(),
             }
         )
@@ -742,8 +748,76 @@ class SungrowEmsOptionsFlow(_PVOutputSteps, OptionsFlowWithReload):
             data_schema=self.add_suggested_values_to_schema(schema, current),
         )
 
+    async def async_step_control(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Control settings (only shown when control is being turned on)."""
+        if user_input is not None:
+            self._control = {
+                CONF_CONTROL_ENABLED: True,
+                CONF_CONTROL_ALLOW_UNVERIFIED: bool(
+                    user_input.get(CONF_CONTROL_ALLOW_UNVERIFIED, False)
+                ),
+                CONF_AC22_UNIT: int(user_input.get(CONF_AC22_UNIT, DEFAULT_AC22_UNIT)),
+                CONF_FORCE_CHARGE_TIMEOUT: int(
+                    user_input.get(
+                        CONF_FORCE_CHARGE_TIMEOUT, DEFAULT_FORCE_CHARGE_TIMEOUT
+                    )
+                ),
+            }
+            return await self._async_after_control()
+        current = {
+            CONF_CONTROL_ALLOW_UNVERIFIED: False,
+            CONF_AC22_UNIT: DEFAULT_AC22_UNIT,
+            CONF_FORCE_CHARGE_TIMEOUT: DEFAULT_FORCE_CHARGE_TIMEOUT,
+            **control_options(self.config_entry.options),
+        }
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_CONTROL_ALLOW_UNVERIFIED): BooleanSelector(),
+                vol.Required(CONF_AC22_UNIT): _number(0, 247, 1),
+                vol.Required(CONF_FORCE_CHARGE_TIMEOUT): _number(
+                    MIN_FORCE_CHARGE_TIMEOUT, MAX_FORCE_CHARGE_TIMEOUT, 5, "min"
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="control",
+            data_schema=self.add_suggested_values_to_schema(schema, current),
+        )
+
+    async def _async_after_control(self) -> ConfigFlowResult:
+        if self._pv_enabled:
+            self._pv_init(self.config_entry.options)
+            return await self.async_step_pvoutput_account()
+        # Off: keep the stored PVOutput settings so turning it back on later
+        # starts from them.
+        return self.async_create_entry(
+            data={
+                **self._general,
+                **pvoutput_options(self.config_entry.options),
+                **self._control,
+                CONF_PVOUTPUT_ENABLED: False,
+            }
+        )
+
     async def _async_pvoutput_finish(self) -> ConfigFlowResult:
-        return self.async_create_entry(data={**self._general, **self._pv})
+        return self.async_create_entry(
+            data={**self._general, **self._control, **self._pv}
+        )
+
+
+CONTROL_OPTION_KEYS: tuple[str, ...] = (
+    CONF_CONTROL_ENABLED,
+    CONF_CONTROL_ALLOW_UNVERIFIED,
+    CONF_AC22_UNIT,
+    CONF_FORCE_CHARGE_TIMEOUT,
+)
+
+
+def control_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """The control settings stored in an options mapping."""
+    return {k: options[k] for k in CONTROL_OPTION_KEYS if k in options}
 
 
 _OPTION_DEFAULTS: dict[str, Any] = {
@@ -754,7 +828,6 @@ _OPTION_DEFAULTS: dict[str, Any] = {
     CONF_IHM_REQUEST_INTERVAL: DEFAULT_IHM_REQUEST_INTERVAL,
     CONF_FAILURE_THRESHOLD: DEFAULT_FAILURE_THRESHOLD,
     CONF_BATTERY_CAPACITY: DEFAULT_BATTERY_CAPACITY_OPTION,
-    CONF_DISCHARGE_EFFICIENCY: DEFAULT_DISCHARGE_EFFICIENCY,
     CONF_SPIKE_MAX_JUMP: DEFAULT_SPIKE_MAX_JUMP,
     CONF_SPIKE_MAX_DAILY: DEFAULT_SPIKE_MAX_DAILY,
     CONF_SPIKE_REBASELINE_COUNT: DEFAULT_SPIKE_REBASELINE_COUNT,

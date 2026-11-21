@@ -129,3 +129,52 @@ async def test_ihm_can_be_disabled(hass: HomeAssistant, ihm: FakeDevice) -> None
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert ihm.connects == 0
+
+
+async def test_options_turn_control_on_and_off(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Control is off by default; turning it on asks for its settings, and
+    turning it off keeps them for next time."""
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    schema = result["data_schema"]
+    user_input = {str(key): key.description["suggested_value"] for key in schema.schema}
+    assert user_input["control_enabled"] is False
+    user_input["control_enabled"] = True
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "control"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "control_allow_unverified": False,
+            "ac22_unit": 3,
+            "force_charge_timeout": 120,
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["control_enabled"] is True
+    assert entry.options["ac22_unit"] == 3
+    assert entry.runtime_data.controller is not None
+    assert hass.states.get("number.sungrow_ems_inverter_backup_reserve") is not None
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    schema = result["data_schema"]
+    user_input = {str(key): key.description["suggested_value"] for key in schema.schema}
+    user_input["control_enabled"] = False
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["control_enabled"] is False
+    assert entry.options["ac22_unit"] == 3  # kept for next time
+    assert entry.runtime_data.controller is None
+    assert hass.states.get("number.sungrow_ems_inverter_backup_reserve") is None

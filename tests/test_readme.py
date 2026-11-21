@@ -1,4 +1,4 @@
-"""The README must describe entities that really exist, and stay read-only."""
+"""The README must describe entities that really exist and say control is opt-in."""
 
 from __future__ import annotations
 
@@ -30,10 +30,11 @@ async def test_readme_entities_exist(
     assert short <= suffixes, sorted(short - suffixes)
 
 
-def test_readme_states_the_read_only_scope_and_keeps_its_images() -> None:
-    assert "## Read-only by design" in README
-    assert "will not be added" in README
-    assert "Phase 2" not in README and "v0.2.0" not in README
+def test_readme_states_the_scope_and_keeps_its_images() -> None:
+    assert "## Read-only by default\n" in README
+    assert "does not write" in README
+    assert "## Control (opt-in, advanced)\n" in README
+    assert "Phase 2" not in README
     for image in ("logo.png", "marketplace.png", "ha1.png"):
         assert f"brand/{image}" in README
         assert (

@@ -240,6 +240,7 @@ def test_split_span_prefers_gap_free_runs() -> None:
     assert split_span(block, single.address, single.count) == []
 
 
-def test_diagnostics_has_no_write_counters() -> None:
+def test_diagnostics_counts_writes_from_zero() -> None:
+    """Writes are counted separately so diagnostics show any control traffic."""
     stats = _hub().diagnostics()["stats"]
-    assert not [k for k in stats if "write" in k]
+    assert stats["writes"] == 0

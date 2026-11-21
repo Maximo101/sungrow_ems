@@ -21,9 +21,12 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from .const import DOMAIN
+from .controller import SungrowController
 from .coordinator import SungrowEmsConfigEntry, SungrowEmsCoordinator
 from .derived import async_build_derived_sensors
 from .entity import SungrowEmsEntity, SungrowNamedEntity, make_unique_id
+from .force_charge import ForceChargeState
+from .profiles import THREE_PHASE_KEYS
 from .pvoutput import PVOutputUploader
 from .registers import Device
 from .sensor_types import (
@@ -51,6 +54,7 @@ async def async_setup_entry(
     runtime = entry.runtime_data
     entities: list[SensorEntity] = []
     has_ihm = runtime.ihm is not None
+    three_phase = runtime.inverter.profile.three_phase
 
     for description in SENSOR_DESCRIPTIONS:
         coordinator = runtime.coordinator_for(description.device)
@@ -59,12 +63,20 @@ async def async_setup_entry(
         if has_ihm and description.key in METER_DEPENDENT_KEYS:
             # The grid meter is on the iHM: these inverter registers read 0.
             description = replace(description, entity_registry_enabled_default=False)
+        elif three_phase and description.key in THREE_PHASE_KEYS:
+            # Three-phase model (SHxxT): phase B/C carry data.
+            description = replace(description, entity_registry_enabled_default=True)
         entities.append(SungrowRegisterSensor(coordinator, description))
 
     for coordinator in runtime.coordinators:
         entities.append(SungrowPollStatusSensor(coordinator))
 
     entities.extend(async_build_derived_sensors(hass, entry))
+
+    if runtime.controller is not None:
+        entities.append(
+            ForceChargeStateSensor(runtime.ihm or runtime.inverter, runtime.controller)
+        )
 
     if runtime.pvoutput is not None:
         entities.append(PVOutputLastUploadSensor(runtime.inverter, runtime.pvoutput))
@@ -350,3 +362,42 @@ class PVOutputDonationStatusSensor(SungrowNamedEntity, SensorEntity):
             if uploader.donation_checked
             else None,
         }
+
+
+class ForceChargeStateSensor(SungrowEmsEntity, SensorEntity):
+    """State of the force-charge state machine (control only).
+
+    idle / charging / target_reached / aborted, with the session (method,
+    target, power, previous settings, deadline) and the reason it ended in
+    the attributes.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:battery-charging-high"
+
+    def __init__(
+        self, coordinator: SungrowEmsCoordinator, controller: SungrowController
+    ) -> None:
+        super().__init__(coordinator, "force_charge_state", "Force charge state")
+        self._controller = controller
+        self._attr_options = [str(s) for s in ForceChargeState]
+
+    @property
+    def available(self) -> bool:
+        """Always available: the state is local, not read from a device."""
+        return True
+
+    @property
+    def native_value(self) -> str:
+        return str(self._controller.force_charge.state)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._controller.force_charge.attributes()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._controller.async_add_listener(self.async_write_ha_state)
+        )

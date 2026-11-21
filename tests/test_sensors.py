@@ -101,13 +101,20 @@ def test_daily_derived_totals_reset_at_midnight() -> None:
             assert d.daily_total, d.key
 
 
-def test_translations_match_strings_and_mention_no_control() -> None:
+def test_translations_match_strings() -> None:
     strings = (PACKAGE / "strings.json").read_text(encoding="utf-8")
     assert json.loads(strings) == json.loads(
         (PACKAGE / "translations" / "en.json").read_text(encoding="utf-8")
     )
     assert "Phase 2" not in strings
-    assert "ontrol" not in strings
+    data = json.loads(strings)
+    # Control is opt-in and says so where it is turned on.
+    assert (
+        "Off by default"
+        in (data["options"]["step"]["init"]["data_description"]["control_enabled"])
+    )
+    for action in ("set_backup_reserve", "force_charge_start", "force_charge_cancel"):
+        assert action in data["services"]
 
 
 def test_manifest() -> None:
@@ -224,9 +231,7 @@ def _battery(power_w: float, flow: int, **kwargs: object) -> dict[str, object]:
         "mb_max_soc": 100.0,
         "mb_backup_reserve_soc": 6.0,
     }
-    return compute_derived(
-        inv, {}, {}, efficiency=0.85, max_daily=200.0, capacity=38.4, **kwargs
-    )
+    return compute_derived(inv, {}, {}, max_daily=200.0, capacity=38.4, **kwargs)
 
 
 def test_battery_energy_two_stack_example() -> None:
@@ -258,21 +263,59 @@ _LIVE_METERS = {"daily_import": 0.8, "daily_export": 0.7}
 
 
 def test_pv_split_uses_ihm_export_behind_an_ihm() -> None:
-    out = compute_derived(
-        _LIVE_INV, {}, _LIVE_METERS, efficiency=0.85, max_daily=200.0, capacity=None
-    )
+    out = compute_derived(_LIVE_INV, {}, _LIVE_METERS, max_daily=200.0, capacity=None)
     assert out["daily_export_pct"] == 2
     assert out["battery_charged_from_pv_pct"] == 39
     assert out["daily_consumption_from_pv_pct"] == 59
     assert out["daily_consumption_from_pv"] == 19.5
-    assert out["daily_consumption"] == 25.06  # iSolarCloud: 25 kWh
-    assert out["self_sufficient"] == 24.26
+    # 32.9 + 0.8 - 0.7 - 12.7 + 5.6 (energy balance, no efficiency factor)
+    assert out["daily_consumption"] == 25.9  # iSolarCloud: 25 kWh at 12:25
+    assert out["self_sufficient"] == 25.1  # PV to home 19.5 + discharge 5.6
     assert out["self_sufficient_pct"] + out["purchased_pct"] == 100
+
+
+def test_consumption_on_a_grid_charge_day() -> None:
+    """20 Nov 2026: 18 kWh went from the grid into the battery.
+
+    iHM load integral 58.39 kWh, iSolarCloud Load 61.3 (DC-side discharge).
+    The old formula (only PV charging subtracted, discharge x 0.85) gave 74.89.
+    """
+    inv = {
+        "mb_daily_pv_generation": 23.0,
+        "mb_daily_battery_charge_from_pv": 11.8,
+        "mb_daily_battery_charge": 29.8,
+        "mb_daily_battery_discharge": 16.7,
+        "mb_daily_export_from_pv": 0.0,
+    }
+    meters = {"daily_import": 49.7, "daily_export": 0.2}
+    out = compute_derived(inv, {}, meters, max_daily=200.0, capacity=None)
+    assert out["daily_battery_charge_from_grid"] == 18.0
+    assert out["daily_consumption"] == 59.4
+    # Bought for the home = 49.7 - 18.0 = 31.7; the rest is PV and battery.
+    assert out["self_sufficient"] == 27.7
+    assert out["self_sufficient_pct"] == 47
+    assert out["purchased_pct"] == 53
+
+
+def test_consumption_needs_total_charge() -> None:
+    inv = {**_LIVE_INV}
+    del inv["mb_daily_battery_charge"]
+    out = compute_derived(inv, {}, _LIVE_METERS, max_daily=200.0, capacity=None)
+    assert out["daily_consumption"] is None
+    # The integrated charge meter is the fallback for 13040.
+    out = compute_derived(
+        inv,
+        {},
+        {**_LIVE_METERS, "daily_battery_charge_total": 12.7},
+        max_daily=200.0,
+        capacity=None,
+    )
+    assert out["daily_consumption"] == 25.9
 
 
 def test_pv_split_uses_inverter_counter_without_ihm() -> None:
     inv = {**_LIVE_INV, "mb_daily_export_from_pv": 1.5}
-    out = compute_derived(inv, {}, {}, efficiency=0.85, max_daily=200.0, capacity=None)
+    out = compute_derived(inv, {}, {}, max_daily=200.0, capacity=None)
     # 1.5 of 32.9 kWh PV went to the grid; no consumption without grid meters.
     assert out["daily_export_pct"] == 4  # 4.56 %, largest-remainder rounding
     assert out["daily_consumption_from_pv"] == 18.7
@@ -281,7 +324,7 @@ def test_pv_split_uses_inverter_counter_without_ihm() -> None:
 
 def test_charging_power_is_never_negative_zero() -> None:
     out = compute_derived(
-        {"mb_battery_power": 0.0}, {}, {}, efficiency=0.85, max_daily=200, capacity=None
+        {"mb_battery_power": 0.0}, {}, {}, max_daily=200, capacity=None
     )
     assert str(out["battery_charging_power"]) == "0.0"
     assert str(out["battery_discharging_power"]) == "0.0"

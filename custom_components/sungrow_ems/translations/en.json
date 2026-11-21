@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Sungrow EMS",
-        "description": "Connect to your Sungrow hybrid inverter and, optionally, the iHomeManager over local Modbus TCP. No cloud account is used and everything stays on your local network.",
+        "description": "Connect to your Sungrow hybrid inverter and, optionally, the iHomeManager over local Modbus TCP. Everything stays on your local network unless you turn on the optional PVOutput.org upload.",
         "data": {
           "inverter_host": "Inverter host",
           "inverter_port": "Inverter port",
@@ -11,7 +11,8 @@
           "ihm_enabled": "Use iHomeManager",
           "ihm_host": "iHomeManager host",
           "ihm_port": "iHomeManager port",
-          "ihm_device_id": "iHomeManager unit ID"
+          "ihm_device_id": "iHomeManager unit ID",
+          "pvoutput_enabled": "Enable PVOutput"
         },
         "data_description": {
           "inverter_host": "IP address or hostname of the inverter's WiNet-S / LAN Modbus TCP interface.",
@@ -20,7 +21,8 @@
           "ihm_enabled": "Poll the iHomeManager for grid, load, battery totals and the EV charger.",
           "ihm_host": "IP address or hostname of the iHomeManager. Required when the iHomeManager is enabled.",
           "ihm_port": "The iHM listens on 502, 503 and 504 and allows ONE connection per port. Default 503. Use 504 while another integration still holds 503.",
-          "ihm_device_id": "Fixed at 247 by the iHM protocol. Only change this if Sungrow support tells you to."
+          "ihm_device_id": "Fixed at 247 by the iHM protocol. Only change this if Sungrow support tells you to.",
+          "pvoutput_enabled": "Also upload solar and consumption data to PVOutput.org. Off by default; you can change this later in the options."
         }
       },
       "reconfigure": {
@@ -44,6 +46,88 @@
           "ihm_port": "The iHM listens on 502, 503 and 504 and allows ONE connection per port. Default 503. Use 504 while another integration still holds 503.",
           "ihm_device_id": "Fixed at 247 by the iHM protocol. Only change this if Sungrow support tells you to."
         }
+      },
+      "pvoutput_account": {
+        "title": "PVOutput.org account",
+        "description": "Enter the API key and system ID from pvoutput.org (Settings > API Settings). They are checked against PVOutput before continuing.",
+        "data": {
+          "pvoutput_api_key": "API key",
+          "pvoutput_system_id": "System ID",
+          "pvoutput_tier": "Account type",
+          "pvoutput_upload_mode": "Upload mode"
+        },
+        "data_description": {
+          "pvoutput_api_key": "Must have write access (not a read-only key).",
+          "pvoutput_system_id": "The numeric ID of the PVOutput system to upload to.",
+          "pvoutput_tier": "Donation accounts can also send extended values v7 to v12 and battery values b1 to b5, and have a higher hourly request limit (300 instead of 60). The choice is checked against what PVOutput reports for the key.",
+          "pvoutput_upload_mode": "Live sends a status every few minutes. Daily sends one total per day."
+        }
+      },
+      "pvoutput_live": {
+        "title": "PVOutput live status",
+        "description": "System: {system}. Status Interval on pvoutput.org: {interval} minutes.",
+        "data": {
+          "pvoutput_interval_mode": "Upload interval",
+          "pvoutput_cumulative": "Send lifetime PV energy as v1",
+          "pvoutput_send_values": "Send power or energy"
+        },
+        "data_description": {
+          "pvoutput_interval_mode": "Auto follows the Status Interval set on pvoutput.org (checked again at every start). Uploads are aligned to the clock, e.g. :00, :05, :10.",
+          "pvoutput_cumulative": "Energy mode only. Off (recommended): v1 is today's PV energy. On: v1 is the inverter's lifetime PV counter and c1=2 is sent so PVOutput works out the daily value itself.",
+          "pvoutput_send_values": "Power (recommended): v2 generation and v4 consumption in W; PVOutput works out the energy. Energy: v1 and v3 in Wh; PVOutput works out the average power. Only one pair is sent."
+        }
+      },
+      "pvoutput_daily": {
+        "title": "PVOutput daily output",
+        "description": "System: {system}. Today's totals are sent once a day at this local time.",
+        "data": {
+          "pvoutput_daily_time": "Upload time"
+        },
+        "data_description": {
+          "pvoutput_daily_time": "Local time. Default 23:55, close to the end of the day so the totals are nearly complete."
+        }
+      },
+      "pvoutput_mapping": {
+        "title": "PVOutput values",
+        "description": "Choose which value is sent for each PVOutput parameter. Auto uses the recommended Sungrow EMS value. A value that is unavailable (or a reading that means \"no data\", such as 0 V or 0 % SoC) is left out of that upload instead of being sent as 0. Donation accounts: b1 to b5 are battery values (auto by default; PVOutput needs b1 for any of them). v7 to v12 can be fed from any Home Assistant entity, for example a weather station; leave a field empty to not send it. Extended values must also be set up on pvoutput.org (Settings > Extended Data).",
+        "data": {
+          "pvoutput_v1": "v1 Energy generation",
+          "pvoutput_v2": "v2 Power generation",
+          "pvoutput_v3": "v3 Energy consumption",
+          "pvoutput_v4": "v4 Power consumption",
+          "pvoutput_v5": "v5 Temperature",
+          "pvoutput_v6": "v6 Voltage",
+          "pvoutput_v7": "v7 Extended value 1 (entity)",
+          "pvoutput_v8": "v8 Extended value 2 (entity)",
+          "pvoutput_v9": "v9 Extended value 3 (entity)",
+          "pvoutput_v10": "v10 Extended value 4 (entity)",
+          "pvoutput_v11": "v11 Extended value 5 (entity)",
+          "pvoutput_v12": "v12 Extended value 6 (entity)",
+          "pvoutput_b1": "b1 Battery power",
+          "pvoutput_b2": "b2 Battery state of charge",
+          "pvoutput_b3": "b3 Battery size (usable)",
+          "pvoutput_b4": "b4 Battery lifetime charge",
+          "pvoutput_b5": "b5 Battery lifetime discharge"
+        },
+        "data_description": {
+          "pvoutput_v1": "Energy mode. Auto: Daily PV generation (Wh), or the lifetime counter when that option is on.",
+          "pvoutput_v2": "Power mode. Auto: PV DC power (W).",
+          "pvoutput_v3": "Energy mode. Auto: Daily consumption (Wh).",
+          "pvoutput_v4": "Power mode. Auto: Load power from the iHomeManager, else from the inverter (W).",
+          "pvoutput_v5": "Auto: Inverter temperature (°C). Left out when the inverter reports 0 (asleep).",
+          "pvoutput_v6": "Auto: Grid voltage from the iHomeManager meter, else inverter phase A (V). Left out below 90 V.",
+          "pvoutput_v7": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v8": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v9": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v10": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v11": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v12": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_b1": "Auto: battery power, + charging / - discharging (W). Required for b2 to b5.",
+          "pvoutput_b2": "Auto: inverter battery SoC, else the iHomeManager's (%). Left out at 0 %.",
+          "pvoutput_b3": "Auto: reported capacity x (Max SoC - Min SoC), in Wh.",
+          "pvoutput_b4": "Auto: inverter lifetime battery charge (Wh). The SH10RS reports this counter wrongly, so it is then left out; choose \"Total battery charge cumulative\" to send the integration's own counter instead.",
+          "pvoutput_b5": "Auto: inverter lifetime battery discharge (Wh)."
+        }
       }
     },
     "error": {
@@ -53,7 +137,12 @@
       "ihm_host_required": "Enter the iHomeManager host, or turn off \"Use iHomeManager\".",
       "ihm_cannot_connect": "Could not connect to the iHomeManager. It allows one connection per port: try port 504 while another integration uses 503.",
       "not_ihm": "The device on that port is not an iHomeManager (device type code is not 0x072A).",
-      "unknown": "Unexpected error. Check the Home Assistant log."
+      "unknown": "Unexpected error. Check the Home Assistant log.",
+      "invalid_auth": "PVOutput rejected the API key or system ID (HTTP 401/403). Check both and that the key has write access.",
+      "pvoutput_rate_limited": "PVOutput's hourly request limit has been reached. Try again later.",
+      "pvoutput_invalid_system": "PVOutput did not accept the system ID.",
+      "pvoutput_cannot_connect": "Could not reach pvoutput.org. Check the internet connection of Home Assistant.",
+      "pvoutput_donation_not_active": "PVOutput reports that this API key is not in donation mode (60 requests per hour). Choose \"Free account\", or donate on pvoutput.org first."
     },
     "abort": {
       "already_configured": "This inverter is already configured.",
@@ -65,7 +154,7 @@
     "step": {
       "init": {
         "title": "Sungrow EMS options",
-        "description": "Polling, reliability and energy model settings. Saving reloads the integration.",
+        "description": "Polling, reliability, energy model, control and PVOutput.org upload settings. Saving reloads the integration.",
         "data": {
           "inverter_scan_interval": "Inverter poll interval",
           "ihm_scan_interval": "iHomeManager poll interval",
@@ -74,10 +163,11 @@
           "ihm_request_interval": "Minimum gap between iHM requests",
           "failure_threshold": "Failed polls before unavailable",
           "battery_capacity": "Battery capacity override",
-          "discharge_efficiency": "Battery discharge efficiency (DC to AC)",
           "spike_max_jump": "Spike filter: largest accepted jump",
           "spike_max_daily": "Spike filter: largest plausible daily total",
-          "spike_rebaseline_count": "Spike filter: readings needed to accept a new baseline"
+          "spike_rebaseline_count": "Spike filter: readings needed to accept a new baseline",
+          "control_enabled": "Enable control (advanced)",
+          "pvoutput_enabled": "Enable PVOutput"
         },
         "data_description": {
           "inverter_scan_interval": "Seconds between inverter polls. 10 s is the recommended default.",
@@ -87,10 +177,268 @@
           "ihm_request_interval": "The iHM protocol requires at least 1.0 s between requests.",
           "failure_threshold": "Consecutive failed polls (or invalid readings for one register) before entities show unavailable. Until then the last good value is kept.",
           "battery_capacity": "Rated battery capacity in kWh. 0 = automatic: use the capacity the hardware reports (iHomeManager register 8147, then inverter registers 13039 and 5639). If none of them report it, Battery usable energy and the time estimates show unavailable until you enter a value here.",
-          "discharge_efficiency": "Factor applied to DC battery discharge in Daily Consumption. Default 0.85.",
           "spike_max_jump": "Grid Import/Export Safe ignore a single step larger than this (kWh). Default 50.",
           "spike_max_daily": "Daily Consumption treats a daily import or export above this as corrupt and uses 0 instead. Default 200.",
-          "spike_rebaseline_count": "After this many consecutive, consistent out-of-range readings the Safe meters accept the new value instead of holding the old one forever. Default 3."
+          "spike_rebaseline_count": "After this many consecutive, consistent out-of-range readings the Safe meters accept the new value instead of holding the old one forever. Default 3.",
+          "control_enabled": "Off by default: the integration only reads. When on, a small set of settings can be written (Backup reserve, iHM energy management mode, EV charger mode, forced charge). Every write is range-checked, rate-limited, skipped when nothing changes and read back to confirm. The next step has the control settings.",
+          "pvoutput_enabled": "Upload solar and consumption data to PVOutput.org. When on, the next steps ask for the account, schedule and values."
+        }
+      },
+      "control": {
+        "title": "Control",
+        "description": "Writes change settings on your inverter and iHomeManager. Only the settings listed in the README can be written, and only within their documented ranges. Settings changed here also change in the iSolarCloud app.",
+        "data": {
+          "control_allow_unverified": "Allow unverified writes",
+          "ac22_unit": "AC22 unit ID behind the WiNet-S",
+          "force_charge_timeout": "Forced charge time limit"
+        },
+        "data_description": {
+          "control_allow_unverified": "Also allow writes that are not in Sungrow's protocol documents or not yet confirmed on hardware: the AC22 charge current and the EV charger's Time plan mode. Leave off unless you are testing them.",
+          "ac22_unit": "Unit ID of the AC22 in the WiNet-S web device list. 0 = no EV charge current control. The AC22 is reached through the inverter's connection.",
+          "force_charge_timeout": "A forced charge is stopped and the previous settings are restored after this many minutes, even if the target is not reached."
+        }
+      },
+      "pvoutput_account": {
+        "title": "PVOutput.org account",
+        "description": "Enter the API key and system ID from pvoutput.org (Settings > API Settings). They are checked against PVOutput before continuing.",
+        "data": {
+          "pvoutput_api_key": "API key",
+          "pvoutput_system_id": "System ID",
+          "pvoutput_tier": "Account type",
+          "pvoutput_upload_mode": "Upload mode"
+        },
+        "data_description": {
+          "pvoutput_api_key": "Must have write access (not a read-only key).",
+          "pvoutput_system_id": "The numeric ID of the PVOutput system to upload to.",
+          "pvoutput_tier": "Donation accounts can also send extended values v7 to v12 and battery values b1 to b5, and have a higher hourly request limit (300 instead of 60). The choice is checked against what PVOutput reports for the key.",
+          "pvoutput_upload_mode": "Live sends a status every few minutes. Daily sends one total per day."
+        }
+      },
+      "pvoutput_live": {
+        "title": "PVOutput live status",
+        "description": "System: {system}. Status Interval on pvoutput.org: {interval} minutes.",
+        "data": {
+          "pvoutput_interval_mode": "Upload interval",
+          "pvoutput_cumulative": "Send lifetime PV energy as v1",
+          "pvoutput_send_values": "Send power or energy"
+        },
+        "data_description": {
+          "pvoutput_interval_mode": "Auto follows the Status Interval set on pvoutput.org (checked again at every start). Uploads are aligned to the clock, e.g. :00, :05, :10.",
+          "pvoutput_cumulative": "Energy mode only. Off (recommended): v1 is today's PV energy. On: v1 is the inverter's lifetime PV counter and c1=2 is sent so PVOutput works out the daily value itself.",
+          "pvoutput_send_values": "Power (recommended): v2 generation and v4 consumption in W; PVOutput works out the energy. Energy: v1 and v3 in Wh; PVOutput works out the average power. Only one pair is sent."
+        }
+      },
+      "pvoutput_daily": {
+        "title": "PVOutput daily output",
+        "description": "System: {system}. Today's totals are sent once a day at this local time.",
+        "data": {
+          "pvoutput_daily_time": "Upload time"
+        },
+        "data_description": {
+          "pvoutput_daily_time": "Local time. Default 23:55, close to the end of the day so the totals are nearly complete."
+        }
+      },
+      "pvoutput_mapping": {
+        "title": "PVOutput values",
+        "description": "Choose which value is sent for each PVOutput parameter. Auto uses the recommended Sungrow EMS value. A value that is unavailable (or a reading that means \"no data\", such as 0 V or 0 % SoC) is left out of that upload instead of being sent as 0. Donation accounts: b1 to b5 are battery values (auto by default; PVOutput needs b1 for any of them). v7 to v12 can be fed from any Home Assistant entity, for example a weather station; leave a field empty to not send it. Extended values must also be set up on pvoutput.org (Settings > Extended Data).",
+        "data": {
+          "pvoutput_v1": "v1 Energy generation",
+          "pvoutput_v2": "v2 Power generation",
+          "pvoutput_v3": "v3 Energy consumption",
+          "pvoutput_v4": "v4 Power consumption",
+          "pvoutput_v5": "v5 Temperature",
+          "pvoutput_v6": "v6 Voltage",
+          "pvoutput_v7": "v7 Extended value 1 (entity)",
+          "pvoutput_v8": "v8 Extended value 2 (entity)",
+          "pvoutput_v9": "v9 Extended value 3 (entity)",
+          "pvoutput_v10": "v10 Extended value 4 (entity)",
+          "pvoutput_v11": "v11 Extended value 5 (entity)",
+          "pvoutput_v12": "v12 Extended value 6 (entity)",
+          "pvoutput_b1": "b1 Battery power",
+          "pvoutput_b2": "b2 Battery state of charge",
+          "pvoutput_b3": "b3 Battery size (usable)",
+          "pvoutput_b4": "b4 Battery lifetime charge",
+          "pvoutput_b5": "b5 Battery lifetime discharge"
+        },
+        "data_description": {
+          "pvoutput_v1": "Energy mode. Auto: Daily PV generation (Wh), or the lifetime counter when that option is on.",
+          "pvoutput_v2": "Power mode. Auto: PV DC power (W).",
+          "pvoutput_v3": "Energy mode. Auto: Daily consumption (Wh).",
+          "pvoutput_v4": "Power mode. Auto: Load power from the iHomeManager, else from the inverter (W).",
+          "pvoutput_v5": "Auto: Inverter temperature (°C). Left out when the inverter reports 0 (asleep).",
+          "pvoutput_v6": "Auto: Grid voltage from the iHomeManager meter, else inverter phase A (V). Left out below 90 V.",
+          "pvoutput_v7": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v8": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v9": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v10": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v11": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_v12": "Any numeric entity. Empty = do not send. Unavailable or non-numeric states are skipped.",
+          "pvoutput_b1": "Auto: battery power, + charging / - discharging (W). Required for b2 to b5.",
+          "pvoutput_b2": "Auto: inverter battery SoC, else the iHomeManager's (%). Left out at 0 %.",
+          "pvoutput_b3": "Auto: reported capacity x (Max SoC - Min SoC), in Wh.",
+          "pvoutput_b4": "Auto: inverter lifetime battery charge (Wh). The SH10RS reports this counter wrongly, so it is then left out; choose \"Total battery charge cumulative\" to send the integration's own counter instead.",
+          "pvoutput_b5": "Auto: inverter lifetime battery discharge (Wh)."
+        }
+      }
+    },
+    "error": {
+      "unknown": "Unexpected error. Check the Home Assistant log.",
+      "invalid_auth": "PVOutput rejected the API key or system ID (HTTP 401/403). Check both and that the key has write access.",
+      "pvoutput_rate_limited": "PVOutput's hourly request limit has been reached. Try again later.",
+      "pvoutput_invalid_system": "PVOutput did not accept the system ID.",
+      "pvoutput_cannot_connect": "Could not reach pvoutput.org. Check the internet connection of Home Assistant.",
+      "pvoutput_donation_not_active": "PVOutput reports that this API key is not in donation mode (60 requests per hour). Choose \"Free account\", or donate on pvoutput.org first."
+    }
+  },
+  "selector": {
+    "pvoutput_tier": {
+      "options": {
+        "free": "Free account — standard v1–v6",
+        "donation": "Donation account — v7–v12, battery b1–b5 and higher rate limits"
+      }
+    },
+    "pvoutput_upload_mode": {
+      "options": {
+        "live": "Live status updates (addstatus.jsp)",
+        "daily": "Once-a-day daily total (addoutput.jsp)"
+      }
+    },
+    "pvoutput_interval_mode": {
+      "options": {
+        "auto": "Auto — sync with the pvoutput.org Status Interval",
+        "5": "Every 5 minutes",
+        "10": "Every 10 minutes",
+        "15": "Every 15 minutes"
+      }
+    },
+    "pvoutput_source": {
+      "options": {
+        "auto": "Auto (recommended)",
+        "none": "Do not send",
+        "pv_daily_energy": "Daily PV generation (Wh)",
+        "pv_lifetime_energy": "Total PV generation, lifetime (Wh)",
+        "daily_consumption": "Daily consumption (Wh)",
+        "daily_import": "Daily grid import (Wh, iHM)",
+        "daily_export": "Daily grid export (Wh, iHM)",
+        "daily_pv_export": "Daily PV export (Wh)",
+        "daily_battery_charge": "Daily battery charge (Wh)",
+        "daily_battery_discharge": "Daily battery discharge (Wh)",
+        "battery_usable_energy": "Battery usable energy (Wh)",
+        "pv_power": "PV DC power (W)",
+        "inverter_active_power": "Inverter active power (W)",
+        "load_power_ihm": "Load power (W, iHM)",
+        "load_power_inverter": "Load power (W, inverter)",
+        "battery_power": "Battery power, + discharge / - charge (W)",
+        "battery_charging_power": "Battery charging power (W)",
+        "battery_discharging_power": "Battery discharging power (W)",
+        "grid_power": "Grid power, + import / - export (W, iHM)",
+        "grid_import_power": "Grid import power (W, iHM)",
+        "grid_export_power": "Grid export power (W, iHM)",
+        "ev_charger_power": "EV charger power (W, iHM)",
+        "inverter_temperature": "Inverter temperature (°C)",
+        "battery_temperature": "Battery temperature (°C)",
+        "grid_voltage_ihm": "Grid voltage, phase A (V, iHM)",
+        "grid_voltage_inverter": "Grid voltage, phase A (V, inverter)",
+        "battery_voltage": "Battery voltage (V)",
+        "grid_frequency": "Grid frequency (Hz)",
+        "battery_soc": "Battery state of charge (%)",
+        "self_sufficient_pct": "Self sufficient today (%)",
+        "battery_usable_capacity": "Battery size, usable (Wh)",
+        "battery_lifetime_charge": "Total battery charge, lifetime (Wh)",
+        "battery_lifetime_discharge": "Total battery discharge, lifetime (Wh)",
+        "battery_charge_cumulative": "Total battery charge cumulative (Wh, Sungrow EMS)",
+        "battery_net_charge_power": "Battery power, + charge / - discharge (W)",
+        "battery_soc_ihm": "Battery state of charge (%, iHM)"
+      }
+    },
+    "pvoutput_send_values": {
+      "options": {
+        "power": "Power — v2 and v4 (recommended)",
+        "energy": "Energy — v1 and v3"
+      }
+    }
+  },
+  "exceptions": {
+    "pvoutput_not_enabled": {
+      "message": "PVOutput upload is not enabled for any loaded Sungrow EMS entry (or not for the one given). Turn it on in the integration options."
+    },
+    "pvoutput_push_failed": {
+      "message": "PVOutput upload failed: {error}"
+    },
+    "write_refused": {
+      "message": "Not written: {error}"
+    },
+    "write_failed": {
+      "message": "Write failed: {error}"
+    },
+    "force_charge_invalid": {
+      "message": "Forced charge: {error}"
+    },
+    "control_not_enabled": {
+      "message": "Control is not enabled for any loaded Sungrow EMS entry (or not for the one given). Turn on Enable control in the integration options."
+    },
+    "control_ambiguous": {
+      "message": "More than one Sungrow EMS entry has control enabled. Give config_entry_id."
+    }
+  },
+  "services": {
+    "pvoutput_push_now": {
+      "name": "Push to PVOutput now",
+      "description": "Sends one PVOutput upload immediately with the configured mode and values (live status or daily output), to test the setup. Ignores a pending rate-limit pause.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "Only this Sungrow EMS entry. Leave empty for every entry with PVOutput enabled."
+        }
+      }
+    },
+    "set_backup_reserve": {
+      "name": "Set backup reserve",
+      "description": "Sets the inverter's Backup reserve SoC (register 13100). On grid, a battery below the reserve is charged up to it. Needs Enable control.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The Sungrow EMS entry. Only needed when more than one has control enabled."
+        },
+        "percent": {
+          "name": "Reserve",
+          "description": "Backup reserve in %, from Min SoC to 100."
+        }
+      }
+    },
+    "force_charge_start": {
+      "name": "Start forced charge",
+      "description": "Charges the battery to a target SoC, then restores the previous energy management settings. Ends on the target, on the time limit, on cancel and when Home Assistant stops. Needs Enable control.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The Sungrow EMS entry. Only needed when more than one has control enabled."
+        },
+        "target_soc": {
+          "name": "Target SoC",
+          "description": "Stop at this battery level (%). At most Max SoC."
+        },
+        "power_kw": {
+          "name": "Charge power",
+          "description": "Charge power in kW (iHM or inverter Compulsory mode). Default: the iHM's charge/discharge upper limit (register 8149)."
+        },
+        "timeout_minutes": {
+          "name": "Time limit",
+          "description": "Stop after this many minutes even if the target is not reached. Default: the option."
+        },
+        "method": {
+          "name": "Method",
+          "description": "ihm_compulsory (iHM Forced mode, default with an iHM), inverter_compulsory (no iHM only) or reserve (raise the Backup reserve; the inverter charges and holds the level itself)."
+        }
+      }
+    },
+    "force_charge_cancel": {
+      "name": "Cancel forced charge",
+      "description": "Stops a running forced charge and restores the previous settings.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The Sungrow EMS entry. Only needed when more than one has control enabled."
         }
       }
     }

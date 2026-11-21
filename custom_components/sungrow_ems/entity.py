@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.number import NumberEntity
+from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.helpers.entity import Entity
@@ -25,11 +27,14 @@ def default_entity_id(entity: Entity, device: Device, name: str) -> str:
     Fixed per device instead of derived from the device name, so renaming the
     devices ("SH10RS", "iHM") does not change the IDs a new install gets.
     """
-    domain = (
-        Platform.BINARY_SENSOR
-        if isinstance(entity, BinarySensorEntity)
-        else Platform.SENSOR
-    )
+    if isinstance(entity, BinarySensorEntity):
+        domain = Platform.BINARY_SENSOR
+    elif isinstance(entity, NumberEntity):
+        domain = Platform.NUMBER
+    elif isinstance(entity, SelectEntity):
+        domain = Platform.SELECT
+    else:
+        domain = Platform.SENSOR
     prefix = ENTITY_ID_PREFIX_IHM if device is Device.IHM else ENTITY_ID_PREFIX_INVERTER
     return f"{domain}.{prefix}_{slugify(name)}"
 

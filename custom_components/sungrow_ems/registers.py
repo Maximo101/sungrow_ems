@@ -1,8 +1,10 @@
-"""Sungrow EMS register map, block plan and decoder (read-only).
+"""Sungrow EMS register map, block plan and decoder (the read side).
 
-This integration never writes to a device, so there is no encoder here and
-registers carry no write metadata. Holding registers are read (FC03) and shown
-as diagnostic sensors only.
+This module only describes what is read: registers carry no write metadata
+and there is no encoder here. Holding registers are read (FC03) and shown as
+diagnostic sensors. The few registers that may be written (opt-in control)
+are listed separately in ``profiles.WRITE_TARGETS`` and written only by
+``writer.SafeWriter``.
 
 Pure Python. No Home Assistant imports, no I/O. Everything here can be unit
 tested offline.
@@ -58,7 +60,7 @@ class Table(StrEnum):
     """Modbus register table."""
 
     INPUT = "input"  # FC04, read-only
-    HOLDING = "holding"  # FC03, settings readback (never written)
+    HOLDING = "holding"  # FC03 settings readback; writes: profiles.WRITE_TARGETS
 
 
 class DataType(StrEnum):
@@ -1145,7 +1147,7 @@ _BLOCK_SPECS: Final[tuple[tuple[str, Device, Table, int, int, int | None], ...]]
     ("inv_backup", _I, _IN, 5720, 5734, None),
     ("inv_system", _I, _IN, 13000, 13047, None),
     ("inv_faults", _I, _IN, 13050, 13079, None),
-    # Inverter, FC03 (read-only diagnostics)
+    # Inverter, FC03 (settings readback)
     ("inv_hold_ems", _I, _HO, 13050, 13100, _INV_SETTINGS),
     ("inv_hold_feed_in_wide", _I, _HO, 31222, 31222, _INV_SETTINGS),
     ("inv_hold_battery_limits", _I, _HO, 33042, 33048, _INV_SETTINGS),

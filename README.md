@@ -7,26 +7,77 @@
 [![GitHub release (pre-release)](https://img.shields.io/github/v/release/Maximo101/sungrow_ems?include_prereleases&label=pre-release)](https://github.com/Maximo101/sungrow_ems/releases)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
-![Read-only](https://img.shields.io/badge/Modbus-read--only-blue)
+![Read-only by default](https://img.shields.io/badge/Modbus-read--only%20by%20default-blue)
 
-A **100 % local, read-only** Home Assistant integration for Sungrow hybrid inverters and the Sungrow **iHomeManager** (iHM), over Modbus TCP. It gives you fast telemetry and ready-made energy tracking with no iSolarCloud account, no cloud polling and no YAML.
+A **100 % local** Home Assistant integration for Sungrow hybrid inverters and the Sungrow **iHomeManager** (iHM), over Modbus TCP. It gives you fast telemetry and ready-made energy tracking, plus a small set of opt-in controls, with no iSolarCloud account, no cloud polling and no YAML.
 
 > [!WARNING]
 > **Beta / pre-release.** Tested on one system so far (see [Tested hardware](#tested-hardware)). Please report what works and what doesn't on yours.
 
-## Read-only
+## What's new in 0.2.0
 
-Sungrow EMS is currently a **telemetry and energy-tracking** integration. It **does not write** to your inverter, battery, iHomeManager or EV charger, and there are **no plans to add write/control features at this stage**.
+0.2.0 is the first GitHub release since 0.1.8. It brings in everything from 0.1.9 and 0.1.10 (never published separately) plus the new opt-in control. Full detail per version is in the [CHANGELOG](CHANGELOG.md).
 
-- The only Modbus function codes it can send are **FC03** and **FC04** (read holding / input registers). There is no write code in the repository, and the test suite fails if any is introduced.
-- There are no `select`, `number`, `switch` or `button` entities and no services.
+**New**
+- **Opt-in control** (off by default): Backup reserve, iHM energy management mode, EV charger mode, AC22 charge current (unverified), and a **forced charge to a target SoC** that puts every setting back afterwards. See [Control](#control-opt-in-advanced).
+- **PVOutput.org upload** (optional, off by default): live status or a daily summary, with donation-mode extras (battery values b1–b5, v7–v12 from any entity) and a *Push to PVOutput now* action. See [PVOutput.org upload](#pvoutputorg-upload-optional).
+- **Model profiles** keyed by the inverter's model code, so single-phase SHxxRS and three-phase SHxxT models run through the same code. On a three-phase model the phase B/C sensors are enabled once and registers the model doesn't have are skipped.
+- **Register snapshot tool and mock server** for development (`scripts/dump_registers.py`, `tests/mock_modbus_server.py`).
+- Inverter power limitation readback (13088–13090, disabled by default) and more diagnostics (per-block age, temporary rejections, write log).
+
+**Improved**
+- **Daily consumption is now a true energy balance**: PV + import − export − battery charge + battery discharge, with no efficiency factor. The old formula counted grid energy that went into the battery as house load (on a day with 18 kWh of grid charging it read 74.9 kWh against 58.4 kWh measured by the iHomeManager; it now reads 59.4). **Self sufficient** and **Purchased %** follow: battery energy counts as your own whatever charged it. See [Consumption and self-sufficiency](#consumption-and-self-sufficiency).
+- **Daily battery charge from grid** no longer flickers down by 0.1 kWh during the day.
+- Register map checked against inverter protocol **V1.1.17**. Running state, DRM state, protocol version and model names are decoded properly.
+- **Time until fully charged / discharged** show hours and minutes (*7h 27m*), with `minutes` and `finishes_at` attributes.
+- **PV split behind an iHM** now counts today's export correctly (it used the inverter's PV export counter, which reads 0 when the meter is on the iHM).
+- Inverter settings are read every 5 minutes instead of every minute, as the protocol asks for settings read through a WiNet-S.
+- A register that the WiNet-S rejects for a moment is no longer marked "not supported" for an hour.
+- Battery current/power (13021/13022) no longer drop −0.1 A / −1 W readings.
+
+### Upgrading from 0.1.8
+
+- **Nothing is written to your devices** unless you turn on *Enable control* in the options.
+- **With an iHomeManager**, *Total PV export*, *Daily direct consumption* and *Total direct consumption* are disabled once (they need a meter wired to the inverter and read 0 behind an iHM). Turn them back on if you want them; that is respected.
+- **Time until fully charged / discharged** are now text sensors. Home Assistant may offer to delete their old long-term statistics.
+- **iHM Device type** is now **Model** and shows *iHomeManager*. The entity ID is unchanged.
+- **Inverter Protocol number** (disabled by default) is removed: Sungrow made those registers reserved.
+- Changes to Min SoC, Max SoC or Backup reserve made in the app can take up to 5 minutes to show.
+- **Daily consumption, Self sufficient and the two percentages change from the day you update** (see above). Past days keep their old values. The *Battery discharge efficiency* option is gone; it is removed from your settings automatically.
+- No other entity IDs or unique IDs changed, so history and the Energy dashboard carry over.
+
+## Read-only by default
+
+Out of the box Sungrow EMS is a **telemetry and energy-tracking** integration. It **does not write** to your inverter, battery, iHomeManager or EV charger unless you turn on **Enable control** in the options.
+
+- With control off, the only Modbus function codes it sends are **FC03** and **FC04** (read holding / input registers), there are no `number` or `select` entities, and the control actions refuse to run.
 - Settings such as EMS mode, SOC limits, export limit and EV charger mode are shown as **read-only diagnostic sensors**.
 
-Why: register writes behave differently across models and regional firmware, and a wrong write can affect an inverter, a battery or a charger. Schedules and limits set in the iSolarCloud app cover day-to-day control, so the integration doesn't need to write. This may be revisited in future, but nothing is planned.
+## Control (opt-in, advanced)
+
+> [!CAUTION]
+> Writes change settings on your inverter and iHomeManager, and the iSolarCloud app shows the new values. Register behaviour differs across models and regional firmware. Turn control on only if you accept that, and keep the app at hand to put things back.
+
+**Settings → Devices & services → Sungrow EMS → Configure → Enable control (advanced)**
+
+Only these settings can be written, and only within their documented ranges:
+
+| Entity / action | Register | Notes |
+|---|---|---|
+| *Backup reserve* (number), action `sungrow_ems.set_backup_reserve` | inverter HR 13100 | Min SoC … 100 %. On grid, a battery below the reserve is charged up to it |
+| *Energy management mode* (select, iHM) | iHM HR 8024 | Self-consumption (1) or Forced mode (5, *Compulsory*). The app's AI mode and Time plan have no documented code: they show as *unknown* with the raw code |
+| *EV charger mode* (select, iHM) | iHM HR 8048 | Fast / ECO & fast / ECO & economic. *Time plan* needs **Allow unverified writes** |
+| *EV charge current* (number, AC22) | AC22 HR 21203 | Only with an **AC22 unit ID** set and **Allow unverified writes** (community register map) |
+| `sungrow_ems.force_charge_start` / `force_charge_cancel` | iHM 8024–8026, or inverter 13050–13052 without an iHM, or 13100 | See below |
+| *Force charge state* (sensor) | — | `idle`, `charging`, `target_reached`, `aborted`, with the session in the attributes |
+
+Every write goes through one guarded path: an allowlist of registers, the model's documented support, range checks against live limits (Min SoC, the iHM's charge limit), no write when the value is already set, a per-register cooldown, a daily write budget per register (EEPROM wear) and a read-back to confirm the value. Writes are refused while that device is not answering polls.
+
+**Forced charge to a target SoC.** `force_charge_start` reads the current energy-management settings from the device, stores them, switches to Forced mode at the given power (default: the iHM's charge/discharge upper limit, 8149; the iHM holds the actual power to what the battery accepts), watches the battery SoC and puts the exact previous settings back when the target is reached, on the time limit (option, default 240 min), on `force_charge_cancel`, and when Home Assistant stops. The session is saved before the first write, so after a crash or power cut the settings are restored on the next start. If someone changes the mode in the app during the charge, the integration stops and does not fight it. With `method: reserve` the Backup reserve is raised to the target instead: the inverter charges and holds that level itself, and the reserve is put back afterwards.
 
 ## Key metrics
 
-A selection of the 192 entities (some are disabled by default). Home Assistant shows each entity with its device name in front, e.g. *SH10RS Daily PV generation* or *iHM Battery SoC*. Entity IDs keep the `sungrow_ems_inverter_` / `sungrow_ems_ihomemanager_` prefixes whatever the devices are called.
+A selection of the 194 entities (some are disabled by default). Home Assistant shows each entity with its device name in front, e.g. *SH10RS Daily PV generation* or *iHM Battery SoC*. Entity IDs keep the `sungrow_ems_inverter_` / `sungrow_ems_ihomemanager_` prefixes whatever the devices are called.
 
 | Metric | Entity | Unit | Source |
 |---|---|---|---|
@@ -75,6 +126,10 @@ A selection of the 192 entities (some are disabled by default). Home Assistant s
 - **Resilient.** Last-known-good values are kept through short dropouts. Entities go unavailable only after a configurable number of failed polls (default 6). Reconnects use exponential backoff, and sockets are always released on unload, reload and failed setup.
 - **Sentinel filtering.** Sungrow's "not available" values (`0xFFFF`, `0x7FFF`, …) and out-of-range readings are dropped instead of appearing as spikes.
 - **Native replacements for common YAML templates:** spike-filtered grid totals, midnight-reset daily meters, daily consumption, self-sufficiency, PV split percentages (always sum to 100), battery status, usable energy and time-to-full / time-to-empty estimates, split import/export and charge/discharge power, and a decoded System Status sensor.
+- **Opt-in control** with one guarded write path: allowlisted registers only, range checks against live limits, no write when nothing changes, cooldowns, a daily write budget per register, and read-back to confirm. Off by default.
+- **Forced charge to a target SoC** that restores your previous settings on target, time limit, cancel, Home Assistant stop, and after a crash.
+- **Model profiles** for SHxxRS and SHxxT, keyed by the model code the inverter reports.
+- **Optional PVOutput.org upload** of the values already polled (live or daily).
 - **Blueprints** for battery SoC alerts, grid outage / restore alerts and EV charger fault alerts.
 - **Diagnostics.** Per-device poll status sensors, plus a redacted *Download diagnostics* report (hosts and serial number removed).
 - **Runs beside other Sungrow integrations.** Unique IDs carry an `_ems` suffix and devices have their own names.
@@ -88,9 +143,9 @@ A selection of the 192 entities (some are disabled by default). Home Assistant s
 | Gateway | iHomeManager, firmware SV930.001.00.P014 | Modbus TCP 503, unit ID 247 |
 | EV charger | Sungrow AC22E-01 | via iHomeManager |
 
-Tested on Home Assistant 2026.10.4. The test suite (131 tests) runs against a simulated inverter and iHomeManager.
+Tested on Home Assistant 2026.10.4. The test suite (144 tests) runs against a simulated inverter and iHomeManager, and against a Modbus TCP mock server seeded from a real register snapshot.
 
-Other SH-series hybrids that implement the *Communication Protocol of Residential and Small Industrial Hybrid Inverter* (V1.1.x) should work, since the register map follows the protocol, but they haven't been tested. Three-phase (RT) models will show some phase B/C entities as unavailable for now. **Reports from other models are very welcome.**
+Other SH-series hybrids that implement the *Communication Protocol of Residential and Small Industrial Hybrid Inverter* (V1.1.x) should work, since the register map follows the protocol, but they haven't been tested. Three-phase models (SHxxRT, SHxxT) are untested; the model profile enables their phase B/C sensors and skips registers they don't have. An SH20T is planned for this site. **Reports from other models are very welcome.**
 
 The iHomeManager is optional. Without it you still get every inverter sensor, but grid-meter totals, the EV charger and the iHM-based derived sensors won't be available.
 
@@ -162,18 +217,50 @@ The integration reads the inverter serial number during setup and uses it as the
 | Minimum gap between iHM requests | 1.0 s | Protocol minimum is 1.0 s |
 | Failed polls before unavailable | 6 | Until then, last good values are held |
 | Battery capacity override | 0 (auto) | Rated capacity. 0 = read from the hardware (iHM 8147 → inverter 13039 → 5639) |
-| Battery discharge efficiency | 0.85 | DC→AC factor used in Daily consumption |
 | Spike filter: largest jump | 50 kWh | Grid Import/Export Safe ignore bigger single steps |
 | Spike filter: largest daily total | 200 kWh | Daily values above this are treated as corrupt |
 | Spike filter: readings to re-baseline | 3 | Consistent readings needed to accept a new baseline |
+| Enable control (advanced) | off | See [Control](#control-opt-in-advanced) |
+| Allow unverified writes | off | AC22 charge current and the EV charger's Time plan |
+| AC22 unit ID behind the WiNet-S | 0 (off) | From the WiNet-S web device list |
+| Forced charge time limit | 240 min | 10–720 min |
+| Enable PVOutput | off | See [PVOutput.org upload](#pvoutputorg-upload-optional) |
 
 Saving changed options reloads the integration.
+
+## PVOutput.org upload (optional)
+
+Off by default. Turn on **Enable PVOutput** during setup or in **Configure**, then follow the steps:
+
+1. **Account:** API key (with write access) and system ID from *pvoutput.org → Settings → API Settings*, account type (*Free* or *Donation*) and upload mode. They are checked against PVOutput before you continue.
+2. **Live status** (default): uploads every 5, 10 or 15 minutes on the clock (or *Auto*, following the Status Interval of your PVOutput system). Sends **power** (v2 + v4, recommended) or **energy** (v1 + v3), plus temperature (v5) and grid voltage (v6). **Daily output** instead sends one summary a day (generation, consumption, export, peak power) at the time you choose.
+3. **Values:** each parameter is *Auto* (the integration's own source), another source, or *Do not send*.
+
+| Parameter | Auto source |
+|---|---|
+| v1 / v2 | Daily PV generation / PV DC power |
+| v3 / v4 | Daily consumption / iHM load power (inverter load power without an iHM) |
+| v5 | Inverter temperature (left out at exactly 0 °C, inverter asleep) |
+| v6 | iHM grid voltage A (left out below 90 V) |
+| v7–v12 (donation) | Any Home Assistant entity you pick; empty by default |
+| b1–b5 (donation) | Battery power (+ charging), SoC, usable battery size, lifetime charge, lifetime discharge |
+
+- **PVOutput last upload** and **PVOutput donation status** sensors show what happened; they are removed again if you turn PVOutput off.
+- The `sungrow_ems.pvoutput_push_now` action sends one upload straight away, to test the setup.
+- A rate limit pauses uploads until PVOutput allows them again. If a donation lapses, uploads carry on with the standard values only.
+- PVOutput is the only part of the integration that talks to the internet. It only reads values that were already polled and never touches the devices.
 
 ## Entities
 
 Two devices are created: the inverter, named after its model as read over Modbus (for example **SH10RS**, or **Inverter** if the model code is unknown), and **iHM** for the iHomeManager. Renaming them in Home Assistant is fine; entity IDs do not change.
 Some rarely useful or unreliable sensors are disabled by default; enable them from the device page if you need them. Holding-register readbacks (settings) are diagnostic entities.
 Refer to table below for examples.
+
+### Consumption and self-sufficiency
+
+- **Daily consumption** = PV + grid import − grid export − battery charge (13040) + battery discharge (13026). Checked against the iHomeManager's own load measurement over full days: within 1–2 %. It reads about 2–3 % below iSolarCloud's *Load*, which counts battery discharge on the battery (DC) side. Needs an iHomeManager for the grid figures.
+- **Self sufficient (kWh)** = PV used in the home + battery discharge used in the home. Energy bought for the home is import minus what went from the grid into the battery, so battery energy counts as your own whatever charged it. **Self sufficient %** and **Purchased %** are shares of Daily consumption and always add up to 100. iSolarCloud counts all grid charging as purchased, so on days with grid charging its self-sufficiency is lower.
+- **Daily battery charge from grid** = total charge (13040) − charge from PV (13012). It only goes up during the day.
 
 ### Battery sensors
 
@@ -217,7 +304,7 @@ Because the iHM only accepts one connection per port, two pollers on the same po
 - **iHM 8049 / 8050** (charger enable / grid draw) read "Disable" in every charger mode tested; their meaning on current firmware is still unclear.
 - The iHM export-limit registers (8028 / 8031) are a separate Modbus limitation layer and don't reflect the export limit set in the iSolarCloud app. Their sensors are disabled by default.
 - **Grid state (13030)** is a reserved register in the current inverter protocol and reads "Not reported" on current firmware; it is disabled by default. Use *Off-grid (backup) mode* instead.
-- Three-phase (RT) models are untested.
+- Three-phase models (SHxxRT, SHxxT) are untested. The model profile already skips registers they don't have (for example MPPT 4 on an SH20T) and enables the phase B/C sensors once when a three-phase inverter is detected.
 
 ## Troubleshooting
 
@@ -242,6 +329,15 @@ pip install -r requirements_test.txt
 pytest
 ruff check . && ruff format --check .
 ```
+
+**Register snapshot and mock server.** `scripts/dump_registers.py` reads every documented register block of the inverter, iHM (and optionally the battery and AC22 units behind the WiNet-S) and writes a JSON + CSV snapshot. `tests/mock_modbus_server.py` serves such a snapshot over Modbus TCP, keeps written settings and simulates the battery (SoC, power, forced charge, emergency charge below the reserve), so the integration can be developed with the hardware disconnected:
+
+```bash
+python3 scripts/dump_registers.py --inverter <winet-ip> --ihm <ihm-ip> --redact
+python3 tests/mock_modbus_server.py snapshots/snapshot_SH10RS_<time>.json --speed 10
+```
+
+Snapshots contain the serial number and IP addresses unless `--redact` is used; don't commit them.
 
 ## Credits
 

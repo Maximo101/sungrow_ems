@@ -7,7 +7,12 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_IHM_HOST, CONF_INVERTER_HOST
+from .const import (
+    CONF_IHM_HOST,
+    CONF_INVERTER_HOST,
+    CONF_PVOUTPUT_API_KEY,
+    CONF_PVOUTPUT_SYSTEM_ID,
+)
 from .coordinator import SungrowEmsConfigEntry
 
 TO_REDACT = {
@@ -16,6 +21,8 @@ TO_REDACT = {
     "host",
     "unique_id",
     "mb_serial_number",
+    CONF_PVOUTPUT_API_KEY,
+    CONF_PVOUTPUT_SYSTEM_ID,
 }
 
 
@@ -41,5 +48,7 @@ async def async_get_config_entry_diagnostics(
         },
         "coordinators": coordinators,
         "derived": dict(runtime.derived.values) if runtime.derived else {},
+        "pvoutput": runtime.pvoutput.diagnostics() if runtime.pvoutput else None,
+        "control": runtime.controller.diagnostics() if runtime.controller else None,
     }
     return async_redact_data(payload, TO_REDACT)
